@@ -52,7 +52,9 @@ Built against the **`com.termux`** prefix (`/data/data/com.termux/files/usr`).
 - **`fastfetch`** — has a `RUNPATH` into the `com.termux` prefix and needs `libandroid-glob`
   (`pkg install libandroid-glob`). It will not run on `io.vaj.tl` or the Nix edition. Image logos
   are loaded through `dlopen`, so `pkg install imagemagick chafa` is what makes the GIF logo work;
-  without them Fastfetch falls back to text.
+  without them Fastfetch falls back to text. The home directory is hard-wired to the `com.termux`
+  home by `recipes/termux-pwd-polyfill.h`, because Bionic reports `pw_dir="/data"` for an app uid
+  and Fastfetch reads passwd in preference to `$HOME`.
 
 The Nix edition needs none of this — nixpkgs has kitty, fastfetch and their dependencies, and the
 animated-logo build is a toolkit there.
