@@ -70,6 +70,11 @@ animated-logo build is a toolkit there.
 - **`kitten clipboard`** guesses MIME types from file extensions.
 - **Fastfetch's animation** relies on the terminal continuing playback on its own clock, which
   Termux Launcher does and most terminals do not.
+- **Fastfetch places its logo through Kitty's Unicode placeholders** (`U=1`), the mechanism
+  `kitten icat --unicode-placeholder` uses, so the terminal must implement placeholders and not
+  only the graphics protocol. One that ignores `U=1` stores the image, draws nothing, and shows
+  the placeholder cells as missing glyphs. Set `"printRemaining": true` when the logo is taller
+  than the module list, or the shell prompt clears the bottom of it.
 
 ## Corresponding source
 
