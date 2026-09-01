@@ -10,7 +10,7 @@ set -euo pipefail
 FASTFETCH_URL="https://github.com/fastfetch-cli/fastfetch.git"
 FASTFETCH_COMMIT="9c7cfb864ff9154ffe951fae191c14d60bb91544"   # v2.67.0
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PATCH="$SCRIPT_DIR/../termux/fastfetch/0001-kitty-animation.patch"
+PATCH="$SCRIPT_DIR/0001-kitty-animation.patch"
 PWD_POLYFILL="$SCRIPT_DIR/termux-pwd-polyfill.h"
 
 TL_NDK=${TL_NDK:-"$HOME/android-sdk/ndk/27.2.12479018"}
@@ -86,6 +86,17 @@ ninja -C "$TL_BUILD_DIR/build" -j"${TL_BUILD_JOBS:-$(nproc)}"
 # its absence means the build would resolve the home directory to "/data" on device.
 if ! grep -qa "$TERMUX_PREFIX/bin/login" "$TL_OUT/fastfetch"; then
     echo "error: the passwd polyfill is missing from the build — fastfetch would ignore ~/.config" >&2
+    exit 1
+fi
+
+# A cross-built binary cannot be run here, so the Kitty logo check in the on-device recipe has no
+# host equivalent. What can be checked is that the patch's depth normalisation survived a rebase:
+# ImageMagick is dlopened and every symbol resolved by name, so the string is in the binary exactly
+# when the call is. Without it a logo that is not already 8-bit transmits the wrong number of bytes
+# and the terminal drops it in silence.
+if ! grep -qa "SetImageDepth" "$TL_OUT/fastfetch"; then
+    echo "error: SetImageDepth is missing from the build — Kitty logos that are not 8-bit per" >&2
+    echo "       channel would be dropped by the terminal without an error" >&2
     exit 1
 fi
 
