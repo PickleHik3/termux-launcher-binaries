@@ -15,11 +15,15 @@ generator that needs a built kitty first.
 | File | Version | Source |
 |---|---|---|
 | `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty](https://github.com/kovidgoyal/kitty) |
-| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` (`9c7cfb86`) + `recipes/0001-kitty-animation.patch` | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
-| `bin/fastfetch-io.vaj.tl-aarch64` | the same, linked for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
+| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` (`9c7cfb86`) + `recipes/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
+| `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
 | `bin/sigye-aarch64` | Sigye `v0.6.0` (`0f0b8caa`) + `recipes/0001-termux-clipboard.patch` | [am2rican5/sigye](https://github.com/am2rican5/sigye) |
 
-`SHA256SUMS` covers all three. `setup-launcher` verifies its own pinned digest before installing
+Fastfetch is here twice because it resolves its libraries and home directory through paths fixed at
+link time, so one build per install prefix is needed; `kitten` and `sigye` are prefix-independent and
+serve every edition. `setup-launcher` reads `$PREFIX` and installs the right one.
+
+`SHA256SUMS` covers all four. `setup-launcher` verifies its own pinned digest before installing
 anything, so a tampered file is refused rather than run.
 
 ## Installing
@@ -45,23 +49,25 @@ Make sure `~/.local/bin` comes before `$PREFIX/bin` in `PATH`, or the APT `fastf
 
 ## Which editions these work on
 
-Built against the **`com.termux`** prefix (`/data/data/com.termux/files/usr`), except where a
-file name says otherwise.
-
 - **`kitten`** — static Go, no shared-library dependencies at all. Runs on any edition.
 - **`sigye`** — links only Bionic (`libc`, `libm`, `libdl`). Runs on any edition. Its `u` and `i`
   clipboard keys shell out to `termux-clipboard-get`/`-set`, so they need `termux-api`.
-- **`fastfetch`** — resolves its libraries through a `RUNPATH` baked in at link time, and reads its
-  home directory from `recipes/termux-pwd-polyfill.h` rather than `$HOME`, because Bionic reports
-  `pw_dir="/data"` for an app uid and Fastfetch trusts passwd. Both are fixed at build time, so
-  there is one file per edition — `fastfetch-aarch64` for `com.termux`,
-  `fastfetch-io.vaj.tl-aarch64` for `io.vaj.tl` — and `setup-launcher` picks by `$PREFIX`. Either
-  needs `libandroid-glob` (`pkg install libandroid-glob`). Image logos are loaded through `dlopen`,
-  so `pkg install imagemagick chafa` is what makes the GIF logo work; without them Fastfetch falls
+- **`fastfetch`** — one build per prefix: `fastfetch-aarch64` for `com.termux`
+  (`/data/data/com.termux/files/usr`), `fastfetch-io.vaj.tl-aarch64` for `io.vaj.tl`. Each has a
+  `RUNPATH` into its own prefix and needs `libandroid-glob` there (`pkg install libandroid-glob`),
+  so the wrong one does not start at all — the linker cannot find `libandroid-glob.so` and the
+  process dies before `main`. Its home directory comes from `recipes/termux-pwd-polyfill.h` and is
+  fixed at the same time, because Bionic reports `pw_dir="/data"` for an app uid and Fastfetch reads
+  passwd in preference to `$HOME`. Image logos are loaded through `dlopen`, so
+  `pkg install imagemagick chafa` is what makes the GIF logo work; without them Fastfetch falls
   back to text.
 
 The Nix edition needs none of this — nixpkgs has kitty, fastfetch and their dependencies, and the
 animated-logo build is a toolkit there.
+
+Both fastfetch builds were rebuilt 2026-09-01 with the 8-bit depth fix (`SetImageDepth` before the
+Kitty transmission), the `io.vaj.tl` one against a sysroot from that edition's own repository
+(`https://repo.pathayam.xyz`); `kitten` and `sigye` were built 2026-08-16 with NDK `27.2.12479018`.
 
 ## Known limits
 
