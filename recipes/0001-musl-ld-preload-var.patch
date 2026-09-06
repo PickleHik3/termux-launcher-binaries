@@ -1,0 +1,20 @@
+From: Termux Launcher <noreply@pathayam.xyz>
+Subject: [PATCH] ldso: read MUSL_LD_PRELOAD instead of LD_PRELOAD
+
+Termux sets LD_PRELOAD to a Bionic library (termux-exec) in every process. A
+musl-linked program cannot load it and dies at startup; unsetting the variable
+instead removes termux-exec from every child the program spawns, so shebang
+scripts break there. Reading a differently named variable leaves LD_PRELOAD
+untouched for children and lets the musl process itself ignore it.
+
+--- a/ldso/dynlink.c
++++ b/ldso/dynlink.c
+@@ -1822,7 +1822,7 @@ void __dls3(size_t *sp, size_t *auxv)
+ 	 * and the dynamic linker may need to be loaded itself. */
+ 	if (!libc.secure) {
+ 		env_path = getenv("LD_LIBRARY_PATH");
+-		env_preload = getenv("LD_PRELOAD");
++		env_preload = getenv("MUSL_LD_PRELOAD");
+ 	}
+ 
+ 	/* If the main program was already loaded by the kernel,

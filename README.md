@@ -2,7 +2,8 @@
 
 Prebuilt `aarch64` binaries for three terminal tools that
 [Termux Launcher](https://github.com/PickleHik3/termux-launcher) shows off but does not ship inside
-the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, and the `sigye` clock.
+the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, and the `sigye` clock — plus
+the musl loader that lets `setup-launcher` run Claude Code inside a Termux prefix.
 
 They exist because building them on a phone ranges from slow to impossible — `kitten` in particular
 cannot practically be built in Termux at all, because kitty's generated Go sources come from a
@@ -18,12 +19,14 @@ generator that needs a built kitty first.
 | `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` (`9c7cfb86`) + `recipes/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
 | `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
 | `bin/sigye-aarch64` | Sigye `v0.6.0` (`0f0b8caa`) + `recipes/0001-termux-clipboard.patch` | [am2rican5/sigye](https://github.com/am2rican5/sigye) |
+| `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl.libc.org](https://musl.libc.org) |
+| `bin/musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl.libc.org](https://musl.libc.org) |
 
 Fastfetch is here twice because it resolves its libraries and home directory through paths fixed at
 link time, so one build per install prefix is needed; `kitten` and `sigye` are prefix-independent and
 serve every edition. `setup-launcher` reads `$PREFIX` and installs the right one.
 
-`SHA256SUMS` covers all four. `setup-launcher` verifies its own pinned digest before installing
+`SHA256SUMS` covers all six. `setup-launcher` verifies its own pinned digest before installing
 anything, so a tampered file is refused rather than run.
 
 ## Installing
@@ -68,6 +71,26 @@ animated-logo build is a toolkit there.
 Both fastfetch builds were rebuilt 2026-09-01 with the 8-bit depth fix (`SetImageDepth` before the
 Kitty transmission), the `io.vaj.tl` one against a sysroot from that edition's own repository
 (`https://repo.pathayam.xyz`); `kitten` and `sigye` were built 2026-08-16 with NDK `27.2.12479018`.
+
+## The musl loader, and Claude Code
+
+Claude Code is distributed only as a Bun-compiled binary linked against musl
+(`@anthropic-ai/claude-code-linux-arm64-musl` on npm). Android has Bionic, not musl, so the binary
+needs a musl dynamic loader — and stock musl does not work on Android either: it reads
+`/etc/resolv.conf`, which does not exist there, so every DNS lookup times out, and it dies on the
+Bionic library Termux puts in `LD_PRELOAD` (termux-exec). `recipes/build-musl-loader.sh` builds
+musl 1.2.5 with the resolver paths moved under the prefix and `LD_PRELOAD` renamed to
+`MUSL_LD_PRELOAD`, so Termux's variable passes through untouched to every child shell and shebang
+handling keeps working there. One loader per prefix, because the resolver path is a string in the
+library. The loader is built natively in Termux (`pkg install clang make patch`), from any edition.
+
+Claude Code itself is not in this repository: it is Anthropic's proprietary build, and at 208 MB it
+is over GitHub's file limit anyway. `setup-launcher` downloads the npm tarball from
+registry.npmjs.org, checks it against the registry's own sha512, points its interpreter at the
+loader with `patchelf`, and installs a `~/.local/bin/claude` wrapper that turns off the built-in
+updater (an updated binary would arrive unpatched and fail to start). Verified 2026-09-06 inside
+the com.termux app process on a Nothing A065 running Android 16: startup, DNS, TLS to
+api.anthropic.com, and the interactive UI.
 
 ## Known limits
 
