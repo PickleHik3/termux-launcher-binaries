@@ -1,44 +1,48 @@
 # Termux Launcher binaries
 
-Prebuilt `aarch64` binaries for three terminal tools that
+Prebuilt `aarch64` binaries for four terminal tools that
 [Termux Launcher](https://github.com/PickleHik3/termux-launcher) shows off but does not ship inside
-the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, and the `sigye` clock — plus
-the musl loader that lets `setup-launcher` run Claude Code inside a Termux prefix.
+the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, the `dawn` writing pad and
+the `sigye` clock — plus the musl loader that lets `tlstore` run Claude Code inside a Termux
+prefix.
 
 They exist because building them on a phone ranges from slow to impossible — `kitten` in particular
 cannot practically be built in Termux at all, because kitty's generated Go sources come from a
 generator that needs a built kitty first.
 
-`setup-launcher` installs them from here. Nothing else in the launcher depends on this repository.
+`tlstore`, the launcher's little package store, installs them from here, against a digest pinned
+in its catalog. Nothing else in the launcher depends on this repository.
 
 ## What is here
 
 | File | Version | Source |
 |---|---|---|
-| `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty](https://github.com/kovidgoyal/kitty) |
-| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` (`9c7cfb86`) + `recipes/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
-| `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch](https://github.com/fastfetch-cli/fastfetch) |
-| `bin/sigye-aarch64` | Sigye `v0.6.0` (`0f0b8caa`) + `recipes/0001-termux-clipboard.patch` | [am2rican5/sigye](https://github.com/am2rican5/sigye) |
-| `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl.libc.org](https://musl.libc.org) |
-| `bin/musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl.libc.org](https://musl.libc.org) |
+| `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty `v0.48.2`](https://github.com/kovidgoyal/kitty/tree/v0.48.2) |
+| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
+| `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
+| `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/0001-dawn-termux-clipboard.patch`, for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
+| `bin/dawn-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
+| `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
+| `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
+| `bin/musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
 
-Fastfetch is here twice because it resolves its libraries and home directory through paths fixed at
-link time, so one build per install prefix is needed; `kitten` and `sigye` are prefix-independent and
-serve every edition. `setup-launcher` reads `$PREFIX` and installs the right one.
+Fastfetch and dawn are here twice because each resolves a library through a path fixed at link
+time, so one build per install prefix is needed; `kitten` and `sigye` are prefix-independent and
+serve every edition. `tlstore` reads `$PREFIX` and installs the right one.
 
-`SHA256SUMS` covers all six. `setup-launcher` verifies its own pinned digest before installing
+`SHA256SUMS` covers all eight. `tlstore` verifies the digest its catalog pins before installing
 anything, so a tampered file is refused rather than run.
 
 ## Installing
 
-Through the launcher's setup script, which is the intended path:
+Through the store, which is the intended path:
 
 ```sh
-setup-launcher      # option 1, or option 3 and pick the tools
+tlstore install kitten dawn sigye
 ```
 
-By hand, into `~/.local/bin` — never `$PREFIX/bin`, which a bootstrap reinstall deletes whole and
-which APT owns the name `fastfetch` in:
+By hand, into `~/.local/bin` — where `tlstore` puts them, and never `$PREFIX/bin`, which a
+bootstrap reinstall deletes whole and which APT owns the name `fastfetch` in:
 
 ```sh
 mkdir -p ~/.local/bin
@@ -55,6 +59,14 @@ Make sure `~/.local/bin` comes before `$PREFIX/bin` in `PATH`, or the APT `fastf
 - **`kitten`** — static Go, no shared-library dependencies at all. Runs on any edition.
 - **`sigye`** — links only Bionic (`libc`, `libm`, `libdl`). Runs on any edition. Its `u` and `i`
   clipboard keys shell out to `termux-clipboard-get`/`-set`, so they need `termux-api`.
+- **`dawn`** — one build per prefix, for the same reason as Fastfetch and with one library
+  instead of several: it links `libcurl` (`pkg install libcurl`) and finds it through its own
+  `RUNPATH`, because Termux clears `LD_LIBRARY_PATH` on Android 7+. The `com.termux` build does not
+  start under `io.vaj.tl` and the other way round. Everything else it parses — markdown, YAML,
+  regular expressions, images — is vendored into the binary. Copy and paste go through the terminal
+  rather than the system: upstream shells out to `xclip`, which no phone has, so the patch replaces
+  that with OSC 52. Termux Launcher answers it, including the read that makes paste work, unless
+  that read has been turned off in its Terminal I/O settings.
 - **`fastfetch`** — one build per prefix: `fastfetch-aarch64` for `com.termux`
   (`/data/data/com.termux/files/usr`), `fastfetch-io.vaj.tl-aarch64` for `io.vaj.tl`. Each has a
   `RUNPATH` into its own prefix and needs `libandroid-glob` there (`pkg install libandroid-glob`),
@@ -85,7 +97,7 @@ handling keeps working there. One loader per prefix, because the resolver path i
 library. The loader is built natively in Termux (`pkg install clang make patch`), from any edition.
 
 Claude Code itself is not in this repository: it is Anthropic's proprietary build, and at 208 MB it
-is over GitHub's file limit anyway. `setup-launcher` downloads the npm tarball from
+is over GitHub's file limit anyway. `tlstore` downloads the npm tarball from
 registry.npmjs.org, checks it against the registry's own sha512, points its interpreter at the
 loader with `patchelf`, and installs a `~/.local/bin/claude` wrapper that turns off the built-in
 updater (an updated binary would arrive unpatched and fail to start). Verified 2026-09-06 inside
@@ -99,6 +111,8 @@ api.anthropic.com, and the interactive UI.
   The Android build is not optional: a `linux/arm64` kitten dies with `SIGSYS: bad system call` on
   `faccessat2`, which Android's seccomp filter kills, and kitten issues it during package
   initialisation — so every subcommand crashes before it runs.
+- **`dawn` needs `libcurl` present**, or it does not start: `pkg install libcurl`. `tlstore`
+  installs it with the item; a hand-installed copy has to be given it.
 - **`kitten @` does nothing useful.** There is no kitty remote-control endpoint to talk to.
 - **`kitten clipboard`** guesses MIME types from file extensions.
 - **Fastfetch's animation** relies on the terminal continuing playback on its own clock, which
@@ -117,6 +131,16 @@ api.anthropic.com, and the interactive UI.
 git clone --depth 1 --branch v0.48.2 https://github.com/kovidgoyal/kitty
 ```
 
+`dawn` is MIT, so its patched source is not an obligation, but the patch that produced these two
+binaries is in `recipes/0001-dawn-termux-clipboard.patch` and applies cleanly to `0e958747`:
+
+```sh
+git clone https://github.com/andrewmd5/dawn && cd dawn
+git checkout 0e9587477463ece157ef7eea66c9e34bc5c7737a
+git submodule update --init --recursive
+git apply /path/to/recipes/0001-dawn-termux-clipboard.patch
+```
+
 `recipes/` holds the exact scripts these binaries were produced with, including the sysroot
 assembly and every flag. They need a Linux host with the Android NDK, Go, and rustup — no Docker
 and no `termux-packages` checkout. The same scripts live in the launcher repository under
@@ -129,6 +153,7 @@ If any source here becomes hard to obtain, open an issue and it will be provided
 - kitty / `kitten` — GPL-3.0-only, `licenses/kitty-GPL-3.0-only.txt`
 - Fastfetch — MIT, `licenses/fastfetch-MIT.txt`, modified by `recipes/0001-kitty-animation.patch`
 - Sigye — MIT, `licenses/sigye-MIT.txt`, modified by `recipes/0001-termux-clipboard.patch`
+- dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/0001-dawn-termux-clipboard.patch`
 
 Fastfetch loads Chafa (LGPL-3.0-or-later) and ImageMagick (`ImageMagick` licence) through `dlopen`
 at runtime; neither is linked into or redistributed with the binary here.
