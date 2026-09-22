@@ -3,8 +3,8 @@
 Prebuilt `aarch64` binaries for four terminal tools that
 [Termux Launcher](https://github.com/PickleHik3/termux-launcher) shows off but does not ship inside
 the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, the `dawn` writing pad and
-the `sigye` clock — plus the musl loader that lets `tlstore` run Claude Code inside a Termux
-prefix.
+the `sigye` clock — plus the musl runtime that lets `tlstore` run Claude Code and opencode inside a
+Termux prefix.
 
 They exist because building them on a phone ranges from slow to impossible — `kitten` in particular
 cannot practically be built in Termux at all, because kitty's generated Go sources come from a
@@ -25,12 +25,19 @@ in its catalog. Nothing else in the launcher depends on this repository.
 | `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
 | `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
 | `bin/musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
+| `bin/musl-libstdcxx-aarch64` | GCC `14.2.0` `libstdc++.so.6`, musl-linked, unmodified | [Alpine `libstdc++-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libstdc++) |
+| `bin/musl-libgcc-aarch64` | GCC `14.2.0` `libgcc_s.so.1`, musl-linked, unmodified | [Alpine `libgcc-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libgcc) |
 
 Fastfetch and dawn are here twice because each resolves a library through a path fixed at link
 time, so one build per install prefix is needed; `kitten` and `sigye` are prefix-independent and
 serve every edition. `tlstore` reads `$PREFIX` and installs the right one.
 
-`SHA256SUMS` covers all eight. `tlstore` verifies the digest its catalog pins before installing
+The last two are not built here and not patched: they are GCC's runtime libraries as Alpine
+packages them, taken out with `recipes/fetch-musl-runtime.sh` against a pinned digest. They exist
+because a binary built for musl elsewhere wants musl's C++ library, and Termux's is a Bionic one the
+musl loader cannot load.
+
+`SHA256SUMS` covers all ten. `tlstore` verifies the digest its catalog pins before installing
 anything, so a tampered file is refused rather than run.
 
 ## Installing
@@ -96,6 +103,18 @@ musl 1.2.5 with the resolver paths moved under the prefix and `LD_PRELOAD` renam
 handling keeps working there. One loader per prefix, because the resolver path is a string in the
 library. The loader is built natively in Termux (`pkg install clang make patch`), from any edition.
 
+## opencode
+
+opencode ships a musl build on npm (`opencode-linux-arm64-musl`), so it takes the same path as
+Claude Code: the store downloads it, checks the registry's own sha512, and points its interpreter
+at the loader. It needs one thing Claude Code does not — `libstdc++.so.6` and `libgcc_s.so.1`,
+which is what the two library files above are for. `tlstore` copies them in beside the loader,
+where the rpath it sets already looks.
+
+Verified 2026-09-22 on a Nothing A065 running Android 16: the libraries resolve under the patched
+loader, and `opencode --version` and `--help` run. Its own installer picks a build by asking `ldd`,
+which on Android chooses the glibc one and fails, so the store makes that choice instead.
+
 Claude Code itself is not in this repository: it is Anthropic's proprietary build, and at 208 MB it
 is over GitHub's file limit anyway. `tlstore` downloads the npm tarball from
 registry.npmjs.org, checks it against the registry's own sha512, points its interpreter at the
@@ -154,6 +173,11 @@ If any source here becomes hard to obtain, open an issue and it will be provided
 - Fastfetch — MIT, `licenses/fastfetch-MIT.txt`, modified by `recipes/0001-kitty-animation.patch`
 - Sigye — MIT, `licenses/sigye-MIT.txt`, modified by `recipes/0001-termux-clipboard.patch`
 - dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/0001-dawn-termux-clipboard.patch`
+- `libstdc++.so.6` and `libgcc_s.so.1` — GCC 14.2.0, GPL-3.0-or-later with the GCC Runtime Library
+  Exception, `licenses/gcc-runtime-GPL-3.0-with-exception.txt`, unmodified. The corresponding
+  source is GCC 14.2.0 as Alpine builds it:
+  [aports `main/gcc`](https://gitlab.alpinelinux.org/alpine/aports/-/tree/v3.22-stable/main/gcc)
+  over [gcc-14.2.0.tar.xz](https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz)
 
 Fastfetch loads Chafa (LGPL-3.0-or-later) and ImageMagick (`ImageMagick` licence) through `dlopen`
 at runtime; neither is linked into or redistributed with the binary here.
