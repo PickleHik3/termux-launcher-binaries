@@ -21,6 +21,7 @@ PATCHES=(
     "$SCRIPT_DIR/0001-dawn-termux-clipboard.patch"
     "$SCRIPT_DIR/0002-dawn-openai-bridge.patch"
     "$SCRIPT_DIR/0003-dawn-edit-tools.patch"
+    "$SCRIPT_DIR/0004-dawn-skip-unchanged-frames.patch"
 )
 
 TL_NDK=${TL_NDK:-"$HOME/android-sdk/ndk/27.2.12479018"}
