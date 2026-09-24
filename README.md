@@ -33,7 +33,7 @@ time, so one build per install prefix is needed; `kitten` and `sigye` are prefix
 serve every edition. `tlstore` reads `$PREFIX` and installs the right one.
 
 The last two are not built here and not patched: they are GCC's runtime libraries as Alpine
-packages them, taken out with `recipes/fetch-musl-runtime.sh` against a pinned digest. They exist
+packages them, taken out with `recipes/cross/fetch-musl-runtime.sh` against a pinned digest. They exist
 because a binary built for musl elsewhere wants musl's C++ library, and Termux's is a Bionic one the
 musl loader cannot load.
 
@@ -104,7 +104,7 @@ Claude Code is distributed only as a Bun-compiled binary linked against musl
 (`@anthropic-ai/claude-code-linux-arm64-musl` on npm). Android has Bionic, not musl, so the binary
 needs a musl dynamic loader — and stock musl does not work on Android either: it reads
 `/etc/resolv.conf`, which does not exist there, so every DNS lookup times out, and it dies on the
-Bionic library Termux puts in `LD_PRELOAD` (termux-exec). `recipes/build-musl-loader.sh` builds
+Bionic library Termux puts in `LD_PRELOAD` (termux-exec). `recipes/cross/build-musl-loader.sh` builds
 musl 1.2.5 with the resolver paths moved under the prefix and `LD_PRELOAD` renamed to
 `MUSL_LD_PRELOAD`, so Termux's variable passes through untouched to every child shell and shebang
 handling keeps working there. One loader per prefix, because the resolver path is a string in the
