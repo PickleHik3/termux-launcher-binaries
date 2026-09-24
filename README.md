@@ -40,6 +40,13 @@ musl loader cannot load.
 `SHA256SUMS` covers all ten. `tlstore` verifies the digest its catalog pins before installing
 anything, so a tampered file is refused rather than run.
 
+Two more directories pin content the Item page shows, so the phone never depends on upstream
+HEAD: `readme/<name>.md` is each upstream project's own README, fetched verbatim at the commit
+this repository's tag pins (see `readme/SOURCES.md`), and `hero/<name>.png` is a short APNG made
+from that project's own demo GIF for the items that have one (see `hero/SOURCES.md`). `tlstore`
+resolves both through the catalog's `readme`/`readme-digest`/`demo-digest` columns and the
+`binaries:<path>@<tag>` source form, the same way it resolves the binaries in `bin/`.
+
 ## Installing
 
 Through the store, which is the intended path:
