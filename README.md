@@ -20,7 +20,7 @@ in its catalog. Nothing else in the launcher depends on this repository.
 | `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty `v0.48.2`](https://github.com/kovidgoyal/kitty/tree/v0.48.2) |
 | `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/termux/fastfetch/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
 | `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
-| `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/0001-dawn-termux-clipboard.patch`, for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
+| `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/cross/0001`–`0004-dawn-*.patch` (clipboard, AI chat, editing, frame dedup), for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
 | `bin/dawn-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
 | `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/termux/sigye/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
 | `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/cross/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
@@ -74,6 +74,13 @@ Make sure `~/.local/bin` comes before `$PREFIX/bin` in `PATH`, or the APT `fastf
   rather than the system: upstream shells out to `xclip`, which no phone has, so the patch replaces
   that with OSC 52. Termux Launcher answers it, including the read that makes paste work, unless
   that read has been turned off in its Terminal I/O settings.
+  The AI chat (`Ctrl+/`, `Tab` switches between it and the note) talks to Termux Launcher's TAI by
+  default, reading its address and optional token from `~/.launcherctl/`. It can answer about the
+  note, rewrite the selected text, and write at the cursor; `Ctrl+Z` undoes an edit. To use any
+  other OpenAI-compatible server instead, write `~/.config/dawn/ai.json`:
+  `{"provider":"openai","base_url":"https://host/v1","api_key":"…","model":"…"}`. The key sits in
+  that file in plain text, so `chmod 600` it. With TAI, `{"provider":"tai","model":"…"}` picks a
+  model other than the default assistant.
 - **`fastfetch`** — one build per prefix: `fastfetch-aarch64` for `com.termux`
   (`/data/data/com.termux/files/usr`), `fastfetch-io.vaj.tl-aarch64` for `io.vaj.tl`. Each has a
   `RUNPATH` into its own prefix and needs `libandroid-glob` there (`pkg install libandroid-glob`),
@@ -150,14 +157,15 @@ api.anthropic.com, and the interactive UI.
 git clone --depth 1 --branch v0.48.2 https://github.com/kovidgoyal/kitty
 ```
 
-`dawn` is MIT, so its patched source is not an obligation, but the patch that produced these two
-binaries is in `recipes/0001-dawn-termux-clipboard.patch` and applies cleanly to `0e958747`:
+`dawn` is MIT, so its patched source is not an obligation, but the four patches that produced these
+two binaries are in `recipes/cross/` and apply cleanly, in order, to `0e958747`:
 
 ```sh
 git clone https://github.com/andrewmd5/dawn && cd dawn
 git checkout 0e9587477463ece157ef7eea66c9e34bc5c7737a
 git submodule update --init --recursive
-git apply /path/to/recipes/0001-dawn-termux-clipboard.patch
+for p in 0001-dawn-termux-clipboard 0002-dawn-openai-bridge 0003-dawn-edit-tools \
+         0004-dawn-skip-unchanged-frames; do git apply /path/to/recipes/cross/$p.patch; done
 ```
 
 `recipes/` holds the exact scripts these binaries were produced with, including the sysroot
@@ -172,7 +180,7 @@ If any source here becomes hard to obtain, open an issue and it will be provided
 - kitty / `kitten` — GPL-3.0-only, `licenses/kitty-GPL-3.0-only.txt`
 - Fastfetch — MIT, `licenses/fastfetch-MIT.txt`, modified by `recipes/termux/fastfetch/0001-kitty-animation.patch`
 - Sigye — MIT, `licenses/sigye-MIT.txt`, modified by `recipes/termux/sigye/0001-termux-clipboard.patch`
-- dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/0001-dawn-termux-clipboard.patch`
+- dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/cross/0001`–`0004-dawn-*.patch`
 - `libstdc++.so.6` and `libgcc_s.so.1` — GCC 14.2.0, GPL-3.0-or-later with the GCC Runtime Library
   Exception, `licenses/gcc-runtime-GPL-3.0-with-exception.txt`, unmodified. The corresponding
   source is GCC 14.2.0 as Alpine builds it:
