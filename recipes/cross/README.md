@@ -16,9 +16,9 @@ NDK plus a sysroot assembled with `dpkg-deb -x`.
 | `build-kitten.sh` | kitty's standalone `kitten` client | Go + python3 |
 
 `fastfetch` and `dawn` are built once per launcher edition — see below. If you only want the
-binaries, they are published for `aarch64` at
-[termux-launcher-binaries](https://github.com/PickleHik3/termux-launcher-binaries) and the
-`tlstore` catalog installs them with a pinned digest. Build them yourself when you want to audit
+binaries, they are published for `aarch64` under `bin/` in this repository, per tag, and the
+`tlstore` catalog installs them with a pinned digest. `build-musl-loader.sh` builds the musl
+loader that lets npm-shipped musl binaries (Claude Code, opencode) run inside a Termux prefix. Build them yourself when you want to audit
 the result, target another prefix, or move a pin.
 
 ```sh

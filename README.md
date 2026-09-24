@@ -18,12 +18,12 @@ in its catalog. Nothing else in the launcher depends on this repository.
 | File | Version | Source |
 |---|---|---|
 | `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty `v0.48.2`](https://github.com/kovidgoyal/kitty/tree/v0.48.2) |
-| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
+| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/termux/fastfetch/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
 | `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
 | `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/0001-dawn-termux-clipboard.patch`, for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
 | `bin/dawn-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
-| `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
-| `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
+| `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/termux/sigye/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
+| `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/cross/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
 | `bin/musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
 | `bin/musl-libstdcxx-aarch64` | GCC `14.2.0` `libstdc++.so.6`, musl-linked, unmodified | [Alpine `libstdc++-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libstdc++) |
 | `bin/musl-libgcc-aarch64` | GCC `14.2.0` `libgcc_s.so.1`, musl-linked, unmodified | [Alpine `libgcc-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libgcc) |
@@ -170,8 +170,8 @@ If any source here becomes hard to obtain, open an issue and it will be provided
 ## Licences
 
 - kitty / `kitten` — GPL-3.0-only, `licenses/kitty-GPL-3.0-only.txt`
-- Fastfetch — MIT, `licenses/fastfetch-MIT.txt`, modified by `recipes/0001-kitty-animation.patch`
-- Sigye — MIT, `licenses/sigye-MIT.txt`, modified by `recipes/0001-termux-clipboard.patch`
+- Fastfetch — MIT, `licenses/fastfetch-MIT.txt`, modified by `recipes/termux/fastfetch/0001-kitty-animation.patch`
+- Sigye — MIT, `licenses/sigye-MIT.txt`, modified by `recipes/termux/sigye/0001-termux-clipboard.patch`
 - dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/0001-dawn-termux-clipboard.patch`
 - `libstdc++.so.6` and `libgcc_s.so.1` — GCC 14.2.0, GPL-3.0-or-later with the GCC Runtime Library
   Exception, `licenses/gcc-runtime-GPL-3.0-with-exception.txt`, unmodified. The corresponding
@@ -185,3 +185,16 @@ at runtime; neither is linked into or redistributed with the binary here.
 These are convenience builds of other people's software. They carry no warranty, and bugs in them
 are this repository's problem, not upstream's — report them
 [here](https://github.com/PickleHik3/termux-launcher/issues).
+
+## Recipes
+
+`recipes/` is how every binary here is built, moved from the launcher repository so the
+sources and the artefacts live together:
+
+- `recipes/cross/` — host cross-builds with the Android NDK: fastfetch, dawn, sigye, kitten, the
+  musl loader, and `termux-sysroot.sh` that assembles a sysroot from Termux's own `.deb`s.
+- `recipes/termux/` — the same tools built on the phone, in Termux.
+- `recipes/nix/` — the Nix edition's overlay.
+
+Each `cross` script honours `TL_NDK`, `TL_SYSROOT`, `TL_OUT` and `TL_BUILD_DIR`; see
+`recipes/cross/README.md`.
