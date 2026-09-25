@@ -10,11 +10,13 @@
 # Static NDK rather than a musl cross build: btop wants only libc, libc++ and pthreads, which the
 # NDK ships as static archives, and a Bionic binary reads Android's /proc, /sys and getpwuid() the
 # way the system's own tools do. termux-packages has no btop package (checked 2026-09-25), so there
-# are no Android patches to inherit; the three applied here are this repository's own:
+# are no Android patches to inherit; the patches applied here are this repository's own:
 #   0001  read network counters from /proc/net/dev when /sys/class/net/*/statistics is refused
 #   0002  drop kill, terminate, the signal menu and renice — the shell uid cannot signal other uids
 #   0003  hide /apex/* loop mounts from the disks box and show /data right after /
 #   0004  Bionic has no pthread_cancel or pthread_timedjoin_np; join with a timeout, never cancel
+#   0005  probe paths with the non-throwing fs::exists, so a /sys file the shell uid may not stat
+#         reads as absent instead of ending btop; skip use_fstab when there is no /etc/fstab
 #
 # Requires: the Android NDK, GNU make, patch and git.
 set -euo pipefail
@@ -28,6 +30,7 @@ PATCHES=(
     "$SCRIPT_DIR/0002-btop-no-process-signals.patch"
     "$SCRIPT_DIR/0003-btop-android-mounts.patch"
     "$SCRIPT_DIR/0004-btop-bionic-threads.patch"
+    "$SCRIPT_DIR/0005-btop-no-throw-fs-probes.patch"
 )
 
 TL_NDK=${TL_NDK:-"$HOME/Android/Sdk/ndk/29.0.14206865"}
