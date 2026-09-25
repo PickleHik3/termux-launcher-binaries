@@ -32,9 +32,6 @@
 #                            drives the detection itself, through TERM_PROGRAM,
 #                            TERM_PROGRAM_VERSION and the marker file the app
 #                            writes, and checks all three.
-#   TLSTORE_RAW_BASE       — the top of the repository a hand-installed tlstore
-#                            reads; the suite points it at a file:// tree laid
-#                            out the way this one is.
 #   TLSTORE_UI=no-such-ui  — the tlstore-ui binary bare `tlstore` execs inside
 #                            the launcher. There is no pty here, so the suite
 #                            never actually execs one; it points this at a
@@ -44,6 +41,16 @@
 #                            tree laid out <host>/<path>, so `tlstore readme`
 #                            and `readme-asset` fetch real files through real
 #                            curl and never reach the network.
+#   TLSTORE_RELEASE_BASE   — where the newest store release is (tlstore, its
+#                            signature, tlstore-ui-<abi>). Every run points it
+#                            at a file:// directory: one that is not there, so
+#                            no ordinary test ever fetches a release, or one of
+#                            the fixture releases the self-update tests lay out.
+#   TLSTORE_BINARIES_RELEASES, TLSTORE_BINARIES_RAW — where a bare
+#                            `binaries:<asset>@<tag>` source (a release asset)
+#                            and a `binaries:<path>@<tag>` source (a file in
+#                            the repository) resolve; file:// trees laid out
+#                            <tag>/<asset>-aarch64 and <tag>/<path>.
 # The catalog signature tests need minisign. Without it they are skipped, and
 # the suite says so instead of passing quietly.
 
@@ -204,6 +211,12 @@ build_fixture() {
     rm -f "$FX/slow.pipe"
     mkfifo "$FX/slow.pipe"
 
+    # A release asset and a repository file, where a binaries: source of each
+    # form resolves: <releases>/<tag>/<asset>-aarch64 and <raw>/<tag>/<path>.
+    mkdir -p "$FX/rel/1.0" "$FX/raw/1.0/readme"
+    printf '#!/bin/sh\necho relbin from a release\n' > "$FX/rel/1.0/relbin-aarch64"
+    printf '<!-- tlstore: pinned from demo/relpinned@abcdef1 -->\n# relpinned\n\nread from the repository at the tag\n' > "$FX/raw/1.0/readme/relpinned.md"
+
     # GitHub, as a directory: <host>/<path> under $FX/gh, which TLSTORE_GITHUB
     # points tlstore at. One README per revision the readme tests expect to be
     # read, pictures beside two of them, and one picture over the 5 MB cap.
@@ -335,8 +348,10 @@ tl() {
             TLSTORE_ASSUME_TTY="${TTY_KNOB:-0}" \
             TLSTORE_HOST="${HOST_KNOB:-}" \
             TLSTORE_UI="${UI_KNOB:-}" \
-            TLSTORE_RAW_BASE="${RAWBASE_KNOB:-}" \
             TLSTORE_GITHUB="file://$FX/gh" \
+            TLSTORE_RELEASE_BASE="${RELEASE_KNOB:-file://$FX/release-none}" \
+            TLSTORE_BINARIES_RELEASES="file://$FX/rel" \
+            TLSTORE_BINARIES_RAW="file://$FX/raw" \
             TERM_PROGRAM="${TP_KNOB:-}" \
             TERM_PROGRAM_VERSION="${TPV_KNOB:-}" \
             "${SHCMD[@]}" "$TLSTORE" "$@" 2>&1)"
@@ -351,8 +366,10 @@ tl() {
             TLSTORE_ASSUME_TTY="${TTY_KNOB:-0}" \
             TLSTORE_HOST="${HOST_KNOB:-}" \
             TLSTORE_UI="${UI_KNOB:-}" \
-            TLSTORE_RAW_BASE="${RAWBASE_KNOB:-}" \
             TLSTORE_GITHUB="file://$FX/gh" \
+            TLSTORE_RELEASE_BASE="${RELEASE_KNOB:-file://$FX/release-none}" \
+            TLSTORE_BINARIES_RELEASES="file://$FX/rel" \
+            TLSTORE_BINARIES_RAW="file://$FX/raw" \
             TERM_PROGRAM="${TP_KNOB:-}" \
             TERM_PROGRAM_VERSION="${TPV_KNOB:-}" \
             "${SHCMD[@]}" "$TLSTORE" "$@" < /dev/null 2>&1)"
@@ -362,7 +379,7 @@ tl() {
     TTY_KNOB=0
     HOST_KNOB=""
     UI_KNOB=""
-    RAWBASE_KNOB=""
+    RELEASE_KNOB=""
     TP_KNOB=""
     TPV_KNOB=""
     return 0
@@ -382,15 +399,17 @@ tl_stdout() {
         TLSTORE_ASSUME_TTY="${TTY_KNOB:-0}" \
         TLSTORE_HOST="${HOST_KNOB:-}" \
         TLSTORE_UI="${UI_KNOB:-}" \
-        TLSTORE_RAW_BASE="${RAWBASE_KNOB:-}" \
         TLSTORE_GITHUB="file://$FX/gh" \
+        TLSTORE_RELEASE_BASE="${RELEASE_KNOB:-file://$FX/release-none}" \
+        TLSTORE_BINARIES_RELEASES="file://$FX/rel" \
+        TLSTORE_BINARIES_RAW="file://$FX/raw" \
         TERM_PROGRAM="${TP_KNOB:-}" \
         TERM_PROGRAM_VERSION="${TPV_KNOB:-}" \
         "${SHCMD[@]}" "$TLSTORE" "$@" < /dev/null 2>/dev/null)"
     ST=$?
     HOST_KNOB=""
     UI_KNOB=""
-    RAWBASE_KNOB=""
+    RELEASE_KNOB=""
     TP_KNOB=""
     TPV_KNOB=""
     return 0
@@ -427,7 +446,7 @@ run_suite() {
     STDIN_TEXT=""
     HOST_KNOB=""
     UI_KNOB=""
-    RAWBASE_KNOB=""
+    RELEASE_KNOB=""
     TP_KNOB=""
     TPV_KNOB=""
 
@@ -1252,46 +1271,146 @@ y
     expect_status "prefetch takes no arguments" 2
     write_catalog "$TESTHOME/.local/share/tlstore/catalog.tsv" 2026090603 2 fakebin-2
 
-    # --- keeping tlstore itself current, when it was installed by hand ---
+    # --- where a binaries: source resolves: a release asset, or a file in the repository ---
+    # A bare asset is <releases>/<tag>/<asset>-aarch64; a path with a slash is
+    # <raw>/<tag>/<path>. The items live in a refreshed catalog laid down for
+    # this block alone, so the app's list is left as it was.
+    user_catalog="$TESTHOME/.local/share/tlstore/catalog.tsv"
+    saved_catalog=""
+    if [ -f "$user_catalog" ]; then
+        saved_catalog="$ROOT/saved-catalog.tsv"
+        cp "$user_catalog" "$saved_catalog"
+    fi
+    mkdir -p "$(dirname "$user_catalog")"
+    {
+        printf '# tlstore catalog\tserial=2026090650\n'
+        printf 'relbin\tbinary\t1\t*\tbinaries:relbin@1.0\t%s\t-\t-\t-\tA tool published as a release asset.\t%s\n' \
+            "$(sha "$FX/rel/1.0/relbin-aarch64")" "$R5_NONE"
+        printf 'relpinned\tfile\t1\t*\tfile://%s/hello.conf\t%s\t~/.config/relpinned.conf\t-\t-\tIts readme is a file in the repository at a tag.\t%s\n' \
+            "$FX" "$(sha "$FX/hello.conf")" "$(r6_upstream_pinned demo/relpinned "binaries:readme/relpinned.md@1.0" "$(sha "$FX/raw/1.0/readme/relpinned.md")")"
+    } > "$user_catalog"
+    : > "$ROOT/curl.log"
+    tl install relbin -y
+    expect_status "a bare binaries: source installs from the release asset" 0
+    expect_file "the release asset landed" "$TESTHOME/.local/bin/relbin"
+    if grep -q "file://$FX/rel/1.0/relbin-aarch64" "$ROOT/curl.log"; then pass; else fail "binaries:relbin@1.0 resolved to <releases>/1.0/relbin-aarch64" "$(cat "$ROOT/curl.log")"; fi
+    if grep -q "/bin/relbin-aarch64\|raw/1.0/relbin" "$ROOT/curl.log"; then fail "a bare asset is never read from the repository tree"; else pass; fi
+    : > "$ROOT/curl.log"
+    tl readme relpinned
+    expect_status "a path-style binaries: source reads the file at the tag" 0
+    if grep -q "file://$FX/raw/1.0/readme/relpinned.md" "$ROOT/curl.log"; then pass; else fail "binaries:readme/relpinned.md@1.0 resolved to <raw>/1.0/readme/relpinned.md" "$(cat "$ROOT/curl.log")"; fi
+    if grep -q "rel/1.0/readme" "$ROOT/curl.log"; then fail "a path is never looked for among the release assets"; else pass; fi
+    expect_content "the pinned copy is what was served" "$OUT" "$(cat "$FX/raw/1.0/readme/relpinned.md")"
+    tl remove relbin -y
+    if [ -n "$saved_catalog" ]; then mv "$saved_catalog" "$user_catalog"; else rm -f "$user_catalog"; fi
+
+    # --- keeping tlstore itself current, with the store program that pairs with it ---
     if [ "$HAVE_MINISIGN" = 1 ]; then
         store="$TPREFIX/libexec/termux-launcher/tlstore"
-        # Each base is the top of a repository, laid out the way this one is.
-        storepath="dist"
-        mkdir -p "$FX/selfnew/$storepath" "$FX/selfsame/$storepath" "$FX/selfbad/$storepath"
-        sed 's/^TLSTORE_VERSION=.*/TLSTORE_VERSION=9.9/' "$TLSTORE" > "$FX/selfnew/$storepath/tlstore"
-        printf '# the newer one\n' >> "$FX/selfnew/$storepath/tlstore"
-        cp "$TLSTORE" "$FX/selfsame/$storepath/tlstore"
-        cp "$FX/selfnew/$storepath/tlstore" "$FX/selfbad/$storepath/tlstore"
-        for d in selfnew selfsame selfbad; do
-            minisign -S -s "$ROOT/key.sec" -x "$FX/$d/$storepath/tlstore.minisig" \
-                -m "$FX/$d/$storepath/tlstore" >/dev/null 2>&1
+        ui="$store/tlstore-ui"
+        # Fixture releases, each laid out the way releases/latest/download is:
+        # a newer script naming its UI's digests, the same version again, a
+        # script nudged after signing, a newer script whose UI asset is not the
+        # one it names, and a newer script with no UI asset at all.
+        for d in new same bad badui noui; do mkdir -p "$FX/release-$d"; done
+        printf '#!/bin/sh\necho the new ui\n' > "$FX/release-new/tlstore-ui-arm64-v8a"
+        printf '#!/bin/sh\necho the new x86 ui\n' > "$FX/release-new/tlstore-ui-x86_64"
+        sed 's/^TLSTORE_VERSION=.*/TLSTORE_VERSION=9.9/' "$TLSTORE" > "$FX/release-new/tlstore"
+        printf '# the newer one\n' >> "$FX/release-new/tlstore"
+        bash "$repo/scripts/embed-ui-digests.sh" "$FX/release-new" >/dev/null
+        cp "$TLSTORE" "$FX/release-same/tlstore"
+        cp "$FX/release-new/tlstore" "$FX/release-bad/tlstore"
+        cp "$FX/release-new/tlstore" "$FX/release-badui/tlstore"
+        cp "$FX/release-new/tlstore" "$FX/release-noui/tlstore"
+        printf '#!/bin/sh\necho not the ui that was named\n' > "$FX/release-badui/tlstore-ui-arm64-v8a"
+        for d in new same bad badui noui; do
+            minisign -S -s "$ROOT/key.sec" -x "$FX/release-$d/tlstore.minisig" \
+                -m "$FX/release-$d/tlstore" >/dev/null 2>&1
         done
-        printf '# nudged after signing\n' >> "$FX/selfbad/$storepath/tlstore"
+        printf '# nudged after signing\n' >> "$FX/release-bad/tlstore"
+        new_ui_digest="$(sha "$FX/release-new/tlstore-ui-arm64-v8a")"
 
-        cp "$TLSTORE" "$TPREFIX/bin/tlstore"
-        printf 'file://%s\n' "$FX/selfnew" > "$store/.standalone"
+        # The launcher's install: the script, a UI it wrote, and its marker.
+        su_reset() {
+            cp "$TLSTORE" "$TPREFIX/bin/tlstore"
+            printf '#!/bin/sh\necho the old ui\n' > "$ui"
+            chmod 755 "$ui"
+            touch "$store/.installed"
+            rm -f "$store/.standalone" "$store/.tlstore-ui-sha256"
+        }
+        su_untouched() {
+            if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then fail "$1: the old tlstore stays"; else pass; fi
+            expect_content "$1: the old store program stays" "$ui" "$(printf '#!/bin/sh\necho the old ui')"
+            expect_no_file "$1: no UI record is written" "$store/.tlstore-ui-sha256"
+        }
+
+        su_reset
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
         tl update -y
-        expect_status "update on a hand-installed tlstore" 0
+        expect_status "update inside the launcher" 0
         expect_out "it says which version is in place now" "tlstore is now version 9.9"
-        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "the newer tlstore replaced the old one"; fi
+        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "the newer tlstore replaced the app's copy"; fi
+        expect_content "the store program moved with it" "$ui" "$(printf '#!/bin/sh\necho the new ui')"
+        if [ -x "$ui" ]; then pass; else fail "the new store program is executable"; fi
+        expect_content "the launcher's record of the UI names the new one" "$store/.tlstore-ui-sha256" "$new_ui_digest"
+        expect_no_file "no staging file is left beside the script" "$TPREFIX/bin/tlstore.new"
+        expect_no_file "no staging file is left beside the UI" "$ui.new"
 
-        cp "$TLSTORE" "$TPREFIX/bin/tlstore"
-        RAWBASE_KNOB="file://$FX/selfsame"
+        su_reset
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
+        tl update --check
+        expect_status "update --check, the UI's background refresh" 0
+        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "update --check keeps tlstore current too"; fi
+        expect_content "and the store program with it" "$ui" "$(printf '#!/bin/sh\necho the new ui')"
+
+        su_reset
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
+        tl_stdout update --check --tsv
+        expect_no_out "under --tsv the self-update says nothing on stdout" "tlstore is now version"
+        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "but it still happened"; fi
+
+        su_reset
+        RELEASE_KNOB="file://$FX/release-same"; UI_KNOB="$ui"
         tl update -y
         expect_no_out "the same version is not installed again" "tlstore is now version"
-        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then fail "nothing should have been replaced"; else pass; fi
+        su_untouched "same version"
 
-        printf 'file://%s\n' "$FX/selfbad" > "$store/.standalone"
+        su_reset
+        RELEASE_KNOB="file://$FX/release-bad"; UI_KNOB="$ui"
         tl update -y
         expect_out "a tlstore whose signature does not cover it is refused" "not signed by the launcher"
-        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then fail "a refused tlstore must not land"; else pass; fi
+        su_untouched "bad signature"
 
-        printf 'file://%s\n' "$FX/selfnew" > "$store/.standalone"
-        touch "$store/.installed"
+        su_reset
+        RELEASE_KNOB="file://$FX/release-badui"; UI_KNOB="$ui"
         tl update -y
-        expect_no_out "inside the launcher tlstore leaves itself alone" "tlstore is now version"
-        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then fail "the app's own copy must not be replaced"; else pass; fi
-        rm -f "$store/.installed" "$store/.standalone" "$TPREFIX/bin/tlstore"
+        expect_status "a tampered store program does not fail the update" 0
+        expect_out "it is refused by the digest the signed script names" "does not match what tlstore 9.9 expects"
+        expect_no_out "and nothing claims to be updated" "tlstore is now version"
+        su_untouched "tampered UI"
+
+        su_reset
+        RELEASE_KNOB="file://$FX/release-noui"; UI_KNOB="$ui"
+        tl update -y
+        expect_out "a release without the store program is refused" "could not download the store program"
+        su_untouched "missing UI"
+
+        su_reset
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
+        tl update -y --offline
+        expect_no_out "offline, tlstore leaves itself alone" "tlstore is now version"
+        su_untouched "offline"
+
+        # A hand-installed tlstore on plain Termux: no store program to pair.
+        su_reset
+        rm -f "$ui" "$store/.installed"
+        printf 'file://%s\n' "$FX" > "$store/.standalone"
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ROOT/no-such-tlstore-ui"
+        tl update -y
+        expect_out "a standalone tlstore updates itself" "tlstore is now version 9.9"
+        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "the newer tlstore replaced the hand-installed one"; fi
+        expect_no_file "no store program is put down where none was" "$ROOT/no-such-tlstore-ui"
+        rm -f "$store/.installed" "$store/.standalone" "$store/.tlstore-ui-sha256" "$TPREFIX/bin/tlstore" "$ui"
     else
         skip "self-update tests" "minisign is not installed"
     fi
@@ -1595,6 +1714,93 @@ OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" != 0 ]; then pass; else fail "no item at all being featured is refused"; fi
 
 rm -rf "$BC_ROOT"
+
+echo
+echo "== embed-ui-digests.sh, bins-plan.sh, bins-record.sh"
+SHELL_LABEL=bins
+BN_ROOT="$(mktemp -d)"
+mkdir -p "$BN_ROOT/scripts" "$BN_ROOT/dist" "$BN_ROOT/assets"
+cp "$repo/scripts/embed-ui-digests.sh" "$repo/scripts/bins-plan.sh" "$repo/scripts/bins-record.sh" "$BN_ROOT/scripts/"
+
+# --- embed-ui-digests.sh: the signed script names the UI built beside it ---
+cp "$TLSTORE" "$BN_ROOT/dist/tlstore"
+printf 'the arm64 ui\n' > "$BN_ROOT/dist/tlstore-ui-arm64-v8a"
+printf 'the x86_64 ui\n' > "$BN_ROOT/dist/tlstore-ui-x86_64"
+if grep -qx 'TLSTORE_UI_SHA256_arm64_v8a=' "$TLSTORE" && grep -qx 'TLSTORE_UI_SHA256_x86_64=' "$TLSTORE"; then pass; else fail "engine/tlstore carries the two empty placeholder lines"; fi
+OUT="$(bash "$BN_ROOT/scripts/embed-ui-digests.sh" "$BN_ROOT/dist" 2>&1)"; ST=$?
+expect_status "embed-ui-digests.sh fills both lines in" 0
+if grep -qx "TLSTORE_UI_SHA256_arm64_v8a=$(sha "$BN_ROOT/dist/tlstore-ui-arm64-v8a")" "$BN_ROOT/dist/tlstore"; then pass; else fail "the arm64-v8a line is that file's sha256"; fi
+if grep -qx "TLSTORE_UI_SHA256_x86_64=$(sha "$BN_ROOT/dist/tlstore-ui-x86_64")" "$BN_ROOT/dist/tlstore"; then pass; else fail "the x86_64 line is that file's sha256"; fi
+if [ "$(grep -c '^TLSTORE_UI_SHA256_' "$BN_ROOT/dist/tlstore")" = 2 ]; then pass; else fail "only the two placeholder lines carry a digest"; fi
+if sh -n "$BN_ROOT/dist/tlstore" 2>/dev/null; then pass; else fail "the script is still a script afterwards"; fi
+if [ "$(grep -vc '^TLSTORE_UI_SHA256_' "$BN_ROOT/dist/tlstore")" = "$(grep -vc '^TLSTORE_UI_SHA256_' "$TLSTORE")" ]; then pass; else fail "nothing else in the script changed"; fi
+OUT="$(bash "$BN_ROOT/scripts/embed-ui-digests.sh" --check "$BN_ROOT/dist" 2>&1)"; ST=$?
+expect_status "--check passes for the binaries it was filled from" 0
+printf 'rebuilt since\n' >> "$BN_ROOT/dist/tlstore-ui-x86_64"
+OUT="$(bash "$BN_ROOT/scripts/embed-ui-digests.sh" --check "$BN_ROOT/dist" 2>&1)"; ST=$?
+if [ "$ST" != 0 ]; then pass; else fail "--check refuses a UI that changed after the digests were written"; fi
+expect_out "and says which one" "tlstore-ui-x86_64"
+
+# --- bins-plan.sh: the build matrix ---
+OUT="$(bash "$BN_ROOT/scripts/bins-plan.sh" all 2>&1)"; ST=$?
+expect_status "bins-plan.sh all" 0
+expect_out "a per-edition tool gets a job per edition" '{"tool":"dawn","edition":"io.vaj.tl","asset":"dawn-io.vaj.tl-aarch64"}'
+expect_out "with the unsuffixed asset for com.termux" '{"tool":"dawn","edition":"com.termux","asset":"dawn-aarch64"}'
+expect_out "an edition-agnostic tool gets one job" '{"tool":"btop","edition":"-","asset":"btop-aarch64"}'
+expect_out "the musl runtime is one job for two assets" '"asset":"musl-libgcc-aarch64,musl-libstdcxx-aarch64"'
+if command -v python3 >/dev/null 2>&1; then
+    if printf '%s' "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if len(d["include"]) == 11 else 1)'; then pass; else fail "the matrix is JSON with eleven entries" "$OUT"; fi
+fi
+OUT="$(bash "$BN_ROOT/scripts/bins-plan.sh" dawn,btop 2>&1)"; ST=$?
+expect_status "bins-plan.sh with a comma list" 0
+if [ "$(printf '%s' "$OUT" | grep -o '"tool"' | wc -l)" = 3 ]; then pass; else fail "dawn,btop is three jobs" "$OUT"; fi
+OUT="$(bash "$BN_ROOT/scripts/bins-plan.sh" nonsense 2>&1)"; ST=$?
+expect_status "an unknown tool is refused" 2
+
+# --- bins-record.sh: SHA256SUMS lines and items.tsv tags after a build ---
+printf 'built dawn\n' > "$BN_ROOT/assets/dawn-aarch64"
+printf 'built dawn for vaj\n' > "$BN_ROOT/assets/dawn-io.vaj.tl-aarch64"
+printf 'built btop\n' > "$BN_ROOT/assets/btop-aarch64"
+{
+    printf '1111111111111111111111111111111111111111111111111111111111111111  dawn-aarch64\n'
+    printf '%s  btop-aarch64\n' "$(sha "$BN_ROOT/assets/btop-aarch64")"
+    printf '2222222222222222222222222222222222222222222222222222222222222222  sigye-aarch64\n'
+    printf '3333333333333333333333333333333333333333333333333333333333333333  hero/dawn.png\n'
+} > "$BN_ROOT/SHA256SUMS"
+bn_tail='-	-	-	Tools	-	0	-	-	-	-	-	-	-	-	-	binaries:scripts/pictures/dawn.jpg@2026.09.25-2	-	0	-	-'
+{
+    printf '# a comment line stays\n'
+    printf 'dawn\tbinary\t0.1.3+0e958747.3\tcom.termux\tbinaries:dawn@2026.09.25-2\t%s\n' "$bn_tail"
+    printf 'dawn\tbinary\t0.1.3+0e958747.3\tio.vaj.tl\tbinaries:dawn-io.vaj.tl@2026.09.25-2\t%s\n' "$bn_tail"
+    printf 'btop\tbinary\t1.4.7\t*\tbinaries:btop@2026.09.25-2\t%s\n' "$bn_tail"
+    printf 'sigye\tbinary\t0.6.0\t*\tbinaries:sigye@2026.09.02\t%s\n' "$bn_tail"
+    printf 'fisher\tfile\t4.4.8\t*\thttps://example.invalid/fisher.fish\t%s\n' "$bn_tail"
+} > "$BN_ROOT/scripts/items.tsv"
+OUT="$(cd "$BN_ROOT" && bash scripts/bins-record.sh bins-2026.09.26 assets 2>"$BN_ROOT/record.err")"; ST=$?
+expect_status "bins-record.sh" 0
+if grep -qx "$(sha "$BN_ROOT/assets/dawn-aarch64")  dawn-aarch64" "$BN_ROOT/SHA256SUMS"; then pass; else fail "a rebuilt asset's SHA256SUMS line is replaced"; fi
+if [ "$(head -1 "$BN_ROOT/SHA256SUMS")" = "$(sha "$BN_ROOT/assets/dawn-aarch64")  dawn-aarch64" ]; then pass; else fail "in place, keeping the line order"; fi
+if grep -qx "$(sha "$BN_ROOT/assets/dawn-io.vaj.tl-aarch64")  dawn-io.vaj.tl-aarch64" "$BN_ROOT/SHA256SUMS"; then pass; else fail "a new asset's line is added"; fi
+if grep -qx '2222222222222222222222222222222222222222222222222222222222222222  sigye-aarch64' "$BN_ROOT/SHA256SUMS" && grep -qx '3333333333333333333333333333333333333333333333333333333333333333  hero/dawn.png' "$BN_ROOT/SHA256SUMS"; then pass; else fail "lines for what was not built are untouched"; fi
+if [ "$(grep -c . "$BN_ROOT/SHA256SUMS")" = 5 ]; then pass; else fail "SHA256SUMS has exactly the old lines plus the new asset" "$(cat "$BN_ROOT/SHA256SUMS")"; fi
+if awk -F'\t' '$1=="dawn" && $4=="com.termux" { exit ($5=="binaries:dawn@bins-2026.09.26" && $3=="0.1.3+0e958747.4") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "a rebuilt +commit.N item moves to the tag with N bumped" "$(cat "$BN_ROOT/scripts/items.tsv")"; fi
+if awk -F'\t' '$1=="dawn" && $4=="io.vaj.tl" { exit ($5=="binaries:dawn-io.vaj.tl@bins-2026.09.26" && $3=="0.1.3+0e958747.4") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "the other edition's row moves and bumps too"; fi
+if awk -F'\t' '$1=="btop" { exit ($5=="binaries:btop@bins-2026.09.26" && $3=="1.4.7") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "an unchanged binary moves to the tag and keeps its version"; fi
+if awk -F'\t' '$1=="sigye" { exit ($5=="binaries:sigye@2026.09.02" && $3=="0.6.0") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "a tool that was not built keeps its tag"; fi
+if awk -F'\t' '$1=="dawn" { exit ($21=="binaries:scripts/pictures/dawn.jpg@2026.09.25-2") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "a path-style source in another column is left alone"; fi
+if awk -F'\t' '$1=="fisher" { exit ($5=="https://example.invalid/fisher.fish") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "a plain URL source is left alone"; fi
+if [ "$(head -1 "$BN_ROOT/scripts/items.tsv")" = "# a comment line stays" ]; then pass; else fail "comment lines survive"; fi
+expect_out "the summary names the version bump" "0.1.3+0e958747.3 -> 0.1.3+0e958747.4"
+if [ -s "$BN_ROOT/record.err" ]; then fail "nothing needed a hand" "$(cat "$BN_ROOT/record.err")"; else pass; fi
+# A rebuilt binary at a plain upstream version: recorded, not bumped, and said so.
+printf 'btop built again\n' > "$BN_ROOT/assets/btop-aarch64"
+rm -f "$BN_ROOT/assets/dawn-aarch64" "$BN_ROOT/assets/dawn-io.vaj.tl-aarch64"
+OUT="$(cd "$BN_ROOT" && bash scripts/bins-record.sh bins-2026.09.27 assets 2>"$BN_ROOT/record.err")"; ST=$?
+expect_status "bins-record.sh for a plain-versioned rebuild" 0
+if awk -F'\t' '$1=="btop" { exit ($5=="binaries:btop@bins-2026.09.27" && $3=="1.4.7") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "the row moves to the tag, version untouched"; fi
+if grep -q 'bins-record: btop (\*): the binary changed but its version 1.4.7 did not' "$BN_ROOT/record.err"; then pass; else fail "and stderr says the version needs a hand" "$(cat "$BN_ROOT/record.err")"; fi
+if awk -F'\t' '$1=="dawn" && $4=="com.termux" { exit ($5=="binaries:dawn@bins-2026.09.26") ? 0 : 1 }' "$BN_ROOT/scripts/items.tsv"; then pass; else fail "dawn, not in this build, keeps the earlier tag"; fi
+rm -rf "$BN_ROOT"
 
 echo
 # ---------------------------------------------------------------------------

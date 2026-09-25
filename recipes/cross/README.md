@@ -24,10 +24,27 @@ launcher copies `btop` to `/data/local/tmp/tl/bin/` and starts it as the shell u
 items"). One build of each serves every edition.
 
 `fastfetch` and `dawn` are built once per launcher edition — see below. If you only want the
-binaries, they are published for `aarch64` under `bin/` in this repository, per tag, and the
-`tlstore` catalog installs them with a pinned digest. `build-musl-loader.sh` builds the musl
-loader that lets npm-shipped musl binaries (Claude Code, opencode) run inside a Termux prefix. Build them yourself when you want to audit
-the result, target another prefix, or move a pin.
+binaries, they are published for `aarch64` as GitHub Release assets of this repository — one
+`bins-YYYY.MM.DD[-N]` prerelease per run of `.github/workflows/build.yml`, each asset under the
+name the catalog installs it by — and the `tlstore` catalog installs them with a pinned digest.
+`build-musl-loader.sh` builds the musl loader that lets npm-shipped musl binaries (Claude Code,
+opencode) run inside a Termux prefix. Build them yourself when you want to audit the result,
+target another prefix, or move a pin.
+
+`build-asset.sh <tool> [edition]` is the one entry point the workflow uses: it runs the tool's
+recipe (assembling the edition's sysroot first where one is needed) and writes the result under
+its asset name — `<tool>-aarch64`, or `<tool>-<package>-aarch64` for an edition other than
+`com.termux` — into `$TL_ASSETS`. The same script runs on a laptop with `TL_NDK` set:
+
+```sh
+cd /some/scratch/dir
+/path/to/recipes/cross/build-asset.sh dawn io.vaj.tl     # -> assets/dawn-io.vaj.tl-aarch64
+/path/to/recipes/cross/build-asset.sh btop               # -> assets/btop-aarch64
+```
+
+On the runner the musl loader is built with the NDK's clang standing in for Termux's (the recipe
+names plain `clang` and a compiler-rt under `$PREFIX`; `build-asset.sh` puts a wrapper on `PATH`
+and passes `LIBCC`).
 
 ```sh
 cd /some/scratch/dir

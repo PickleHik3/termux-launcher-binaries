@@ -4,8 +4,10 @@
 # block the launcher pins a tag against.
 #
 #   scripts/release.sh <tag> --prepare   copy sources into dist/, build the catalog, check
-#                                        dist/tlstore-ui-<abi> freshness — no signing
-#   scripts/release.sh <tag>             verify both signatures, write SHA256SUMS, print the lock
+#                                        dist/tlstore-ui-<abi> freshness, write the UI digests
+#                                        into dist/tlstore (scripts/embed-ui-digests.sh) — no signing
+#   scripts/release.sh <tag>             verify both signatures and the embedded UI digests,
+#                                        write SHA256SUMS, print the lock
 #
 # Two passes because signing needs the developer's passphrase (scripts/sign.sh runs by hand,
 # between them, and never inside this script): --prepare never touches a key, and the second pass
@@ -39,6 +41,9 @@ if [ "$mode" = "--prepare" ]; then
 
     "$here/build-catalog.sh"
     "$here/check-dist.sh"
+    # The script names the tlstore-ui built beside it, so a phone's self-update takes the two
+    # together; the signature made next covers those lines.
+    "$here/embed-ui-digests.sh" "$dist"
 
     echo
     echo "dist/ is prepared for tag $tag."
@@ -68,6 +73,7 @@ if ! minisign -Q -V -m "$dist/catalog.tsv" -p "$repo/engine/trusted.pub" >/dev/n
 fi
 
 "$here/check-dist.sh"
+"$here/embed-ui-digests.sh" --check "$dist"
 
 # --- SHA256SUMS: replace existing dist/ lines, keep every other line as it was ---
 sums="$repo/SHA256SUMS"

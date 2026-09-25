@@ -211,7 +211,9 @@ A `binaries:` source may now name a path instead of a bare asset —
 `binaries:<path-with-slash>@<tag>` resolves to `$BINARIES_RAW/<tag>/<path>` (a file at that exact
 place in the binaries repository, e.g. a pinned `readme/dawn.md` or a hero `hero/sigye.png`) —
 while a bare `binaries:<asset>@<tag>` keeps resolving to the per-processor
-`$BINARIES_RAW/<tag>/bin/<asset>-aarch64` it always did. `build-catalog.sh` looks a path asset up
+`$BINARIES_RAW/<tag>/bin/<asset>-aarch64` it always did (since tlstore 0.6 the bare form is a
+GitHub Release asset, `$BINARIES_RELEASES/<tag>/<asset>-aarch64`, and `bin/` is gone —
+`docs/SPEC.md`, Revision 8). `build-catalog.sh` looks a path asset up
 in the binaries repository's `SHA256SUMS` by that exact repo-relative path; a bare asset keeps
 being looked up as `<asset>-aarch64`.
 

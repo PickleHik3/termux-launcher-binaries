@@ -23,9 +23,6 @@
 #                       terminal (the test suite pipes them in)
 #   TLSTORE_HOST        launcher|termux — which app the store is running in,
 #                       when the detection below should not have the last word
-#   TLSTORE_RAW_BASE    the top of the repository a standalone install reads,
-#                       the paths below it being the ones in this tree
-#                       (default the raw main URL; tests point it at file://)
 #   TLSTORE_UI          the tlstore-ui binary bare `tlstore` execs inside the
 #                       launcher (default $PREFIX/libexec/termux-launcher/
 #                       tlstore/tlstore-ui; tests point it at a fake one, or
@@ -35,10 +32,32 @@
 #                       every https://…github… address (default none, the real
 #                       hosts; tests point it at a file:// tree laid out
 #                       <host>/<path>)
+#   TLSTORE_RELEASE_BASE  where the newest store release is: tlstore,
+#                       tlstore.minisig, catalog.tsv, catalog.tsv.minisig and
+#                       tlstore-ui-<abi> sit right under it (default this
+#                       repository's releases/latest/download; tests point it
+#                       at a file:// directory)
+#   TLSTORE_BINARIES_RELEASES  where a bare `binaries:<asset>@<tag>` source
+#                       is: <base>/<tag>/<asset>-aarch64 (default this
+#                       repository's releases/download; tests use file://)
+#   TLSTORE_BINARIES_RAW  where a `binaries:<path/with/slash>@<tag>` source
+#                       is: <base>/<tag>/<path>, a file in this repository at
+#                       that tag (default the raw GitHub URL; tests use file://)
 
 set -u
 
-TLSTORE_VERSION=0.5
+TLSTORE_VERSION=0.6
+
+# The store program that pairs with this script, one digest per processor.
+# Empty in the source tree: scripts/release.sh --prepare fills them in from
+# dist/tlstore-ui-<abi> before the file is signed, so a self-update can check
+# the program it downloads against a digest the signature covers (see
+# self_update, which reads them out of the downloaded copy, not this one).
+# Keep these two lines exactly in this shape.
+# shellcheck disable=SC2034
+TLSTORE_UI_SHA256_arm64_v8a=
+# shellcheck disable=SC2034
+TLSTORE_UI_SHA256_x86_64=
 
 PREFIX="${TLSTORE_PREFIX:-${PREFIX:-${HOME%/files/home}/files/usr}}"
 HOME="${HOME:?tlstore needs HOME}"
@@ -65,10 +84,10 @@ USER_CATALOG="$DATA_DIR/catalog.tsv"
 PUBKEY="$STORE_DIR/trusted.pub"
 STATE="$DATA_DIR/installed.tsv"
 
-# The app writes this on every start; a hand install writes the other one, with
-# the address it came from inside it.
+# The app writes this when it puts tlstore down (a hand install writes
+# .standalone instead, with the address it came from inside it; nothing here
+# reads that one — tlstore keeps itself current the same way in both cases).
 INSTALLED_MARK="$STORE_DIR/.installed"
-STANDALONE_MARK="$STORE_DIR/.standalone"
 
 # Which app the store is running in. The launcher names itself in the
 # environment; over ssh nothing does, and then the app's own marker answers.
@@ -93,27 +112,26 @@ esac
 LAUNCHER_VERSION="${TERM_PROGRAM_VERSION:-}"
 [ "$HOST" = launcher ] || LAUNCHER_VERSION=""
 
-CATALOG_URL="${TLSTORE_CATALOG_URL:-https://raw.githubusercontent.com/PickleHik3/tlstore/main/dist/catalog.tsv}"
+# The newest store release: the signed script, the signed catalog and the
+# store program, as GitHub Release assets. The catalog and tlstore itself are
+# refreshed from here, whoever installed tlstore (see refresh_catalog and
+# self_update).
+RELEASE_BASE="${TLSTORE_RELEASE_BASE:-https://github.com/PickleHik3/tlstore/releases/latest/download}"
+CATALOG_URL="${TLSTORE_CATALOG_URL:-$RELEASE_BASE/catalog.tsv}"
 NPM_REGISTRY="${TLSTORE_NPM_REGISTRY:-https://registry.npmjs.org}"
 PATCHELF="${TLSTORE_PATCHELF:-patchelf}"
 TLSTORE_UI_BIN="${TLSTORE_UI:-$STORE_DIR/tlstore-ui}"
 
 LAUNCHER_RAW="https://raw.githubusercontent.com/PickleHik3/termux-launcher"
-BINARIES_RAW="https://raw.githubusercontent.com/PickleHik3/tlstore"
+# A bare `binaries:<asset>@<tag>` is a GitHub Release asset of this repository
+# (a bins-… prerelease built by .github/workflows/build.yml); a path with a
+# slash is a small file kept in git, read raw at that tag.
+BINARIES_RELEASES="${TLSTORE_BINARIES_RELEASES:-https://github.com/PickleHik3/tlstore/releases/download}"
+BINARIES_RAW="${TLSTORE_BINARIES_RAW:-https://raw.githubusercontent.com/PickleHik3/tlstore}"
 
 # Where an item's own README and its pictures are read from (see cmd_readme).
 GITHUB_RAW="https://raw.githubusercontent.com"
 GITHUB_MIRROR="${TLSTORE_GITHUB:-}"
-
-# The top of the repository a hand-installed tlstore reads: the address the
-# installer wrote down, unless the environment says otherwise. Everything under
-# it sits where it sits in this tree.
-RAW_BASE="${TLSTORE_RAW_BASE:-}"
-if [ -z "$RAW_BASE" ] && [ -f "$STANDALONE_MARK" ]; then
-    RAW_BASE=$(head -1 "$STANDALONE_MARK" 2>/dev/null || true)
-fi
-[ -n "$RAW_BASE" ] || RAW_BASE="$BINARIES_RAW/main"
-STORE_PATH="dist"
 
 ASSUME_YES="${TLSTORE_ASSUME_YES:-0}"
 [ "$ASSUME_YES" = 1 ] || ASSUME_YES=0
@@ -457,12 +475,12 @@ source_url() {
             su_asset="${su_rest%@*}"
             su_tag="${su_rest##*@}"
             case "$su_asset" in
-                # A path (a readme or a hero picture pinned in the binaries
-                # repository) resolves straight to that path; a bare asset
-                # name keeps resolving to the per-processor binary it always
-                # named.
+                # A path (a readme or a hero picture kept in the repository)
+                # resolves straight to that file at the tag; a bare asset name
+                # is the per-processor binary, published as a release asset
+                # under the tag.
                 */*) printf '%s/%s/%s' "$BINARIES_RAW" "$su_tag" "$su_asset" ;;
-                *) printf '%s/%s/bin/%s-aarch64' "$BINARIES_RAW" "$su_tag" "$su_asset" ;;
+                *) printf '%s/%s/%s-aarch64' "$BINARIES_RELEASES" "$su_tag" "$su_asset" ;;
             esac
             ;;
         *) printf '%s' "$1" ;;
@@ -2068,7 +2086,8 @@ snapshot_key() {
 snapshot_rows() {
     rows | awk -F "$TAB" -v OFS="$TAB" -v state="$STATE" -v home="$HOME" \
         -v bindir="$BIN_DIR" -v libdir="$LIB_DIR" -v privdir="$PRIV_DIR" \
-        -v cachedir="$CACHE_DIR" -v launcher_raw="$LAUNCHER_RAW" -v binaries_raw="$BINARIES_RAW" '
+        -v cachedir="$CACHE_DIR" -v launcher_raw="$LAUNCHER_RAW" -v binaries_raw="$BINARIES_RAW" \
+        -v binaries_rel="$BINARIES_RELEASES" '
         function optval(list, key,   n, i, parts) {
             n = split(list, parts, ";")
             for (i = 1; i <= n; i++)
@@ -2114,7 +2133,7 @@ snapshot_rows() {
                 tag = rest; sub(/.*@/, "", tag)
                 path = rest; sub(/@[^@]*$/, "", path)
                 if (index(path, "/") > 0) return binaries_raw "/" tag "/" path
-                return binaries_raw "/" tag "/bin/" path "-aarch64"
+                return binaries_rel "/" tag "/" path "-aarch64"
             }
             return src
         }
@@ -2341,7 +2360,8 @@ prefetch_gc() {
     gc_subs=" "
     gc_changed=0
     gc_list=$(rows | awk -F "$TAB" -v OFS="$TAB" -v cachedir="$CACHE_DIR" \
-        -v launcher_raw="$LAUNCHER_RAW" -v binaries_raw="$BINARIES_RAW" '
+        -v launcher_raw="$LAUNCHER_RAW" -v binaries_raw="$BINARIES_RAW" \
+        -v binaries_rel="$BINARIES_RELEASES" '
         function dash(v) { return (v == "") ? "-" : v }
         function url_of(src,   rest, path, tag) {
             if (index(src, "launcher:") == 1) {
@@ -2355,7 +2375,7 @@ prefetch_gc() {
                 tag = rest; sub(/.*@/, "", tag)
                 path = rest; sub(/@[^@]*$/, "", path)
                 if (index(path, "/") > 0) return binaries_raw "/" tag "/" path
-                return binaries_raw "/" tag "/bin/" path "-aarch64"
+                return binaries_rel "/" tag "/" path "-aarch64"
             }
             return src
         }
@@ -2775,10 +2795,12 @@ update_items() {
 cmd_update() {
     update_items "$@"
     cu_status=$?
-    # Self-update is not part of the item stream tlstore-ui reads; a --progress
-    # run leaves tlstore itself alone until a plain `update` asks again.
-    if [ "$cu_status" != 2 ] && [ "${cu_check:-0}" = 0 ] && [ "${cu_offline:-0}" = 0 ] \
-        && [ "$PROGRESS" != 1 ]; then
+    # tlstore keeps itself, and the store program that pairs with it, current
+    # on a plain `update` and on `update --check` — the refresh tlstore-ui runs
+    # when it starts — but never offline, and not inside a --progress stream:
+    # that stream carries the item lines and nothing else, and the UI already
+    # asked when it started.
+    if [ "$cu_status" != 2 ] && [ "${cu_offline:-0}" = 0 ] && [ "$PROGRESS" != 1 ]; then
         self_update
     fi
     return "$cu_status"
@@ -2820,11 +2842,43 @@ version_newer() {
         BEGIN { exit (vercmp(a, b) > 0) ? 0 : 1 }'
 }
 
-# A tlstore installed by hand keeps itself current. Inside the launcher the app
-# writes the file on every start, so there this does nothing.
+# The name the launcher's build gives the store program for this processor:
+# uname -m says aarch64 or x86_64, the APK's assets say arm64-v8a or x86_64.
+ui_abi() {
+    case "$ARCH" in
+        aarch64|arm64) printf 'arm64-v8a' ;;
+        x86_64) printf 'x86_64' ;;
+        *) printf '' ;;
+    esac
+}
+
+# What self_update has to say. Its lines are narration, never part of the
+# machine output `update --check --tsv` prints for tlstore-ui, so in that
+# mode they go to stderr the way --progress narration does.
+su_say() {
+    if [ "${cu_tsv:-0}" = 1 ]; then
+        printf '%s\n' "$*" >&2
+    else
+        say "$*"
+    fi
+}
+
+# tlstore keeps itself current from the newest store release, whoever put it
+# here — the launcher app or the standalone installer. The release's script
+# is fetched with its signature and taken only when it checks out against the
+# trusted key and its TLSTORE_VERSION is ahead of this one's. The store
+# program moves with it: the script names the digest of the tlstore-ui built
+# beside it (TLSTORE_UI_SHA256_<abi>, filled in before signing), and where a
+# tlstore-ui is in place the matching one is downloaded, checked against that
+# signed digest and put down together with the script. An engine and a UI
+# from different releases is what breaks the store, so if the UI cannot be
+# had, the old script stays too. Both land by a rename beside their target,
+# the script first (an older UI reads a newer script's output — new columns
+# only ever land at the end — the other way round does not hold), and the
+# launcher's own record of the UI (.tlstore-ui-sha256) is updated so the app
+# still counts the file as its own. Nothing is re-executed: the copy that is
+# running finishes its work on the old inode.
 self_update() {
-    [ -f "$STANDALONE_MARK" ] || return 0
-    [ ! -f "$INSTALLED_MARK" ] || return 0
     su_target="$PREFIX/bin/tlstore"
     [ -f "$su_target" ] || return 0
     have curl || return 0
@@ -2833,8 +2887,10 @@ self_update() {
     mkdir -p "$CACHE_DIR"
     su_new="$CACHE_DIR/tlstore.new"
     su_sig="$CACHE_DIR/tlstore.new.minisig"
-    if ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_new" "$RAW_BASE/$STORE_PATH/tlstore" 2>/dev/null ||
-       ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_sig" "$RAW_BASE/$STORE_PATH/tlstore.minisig" 2>/dev/null; then
+    su_ui_new="$CACHE_DIR/tlstore-ui.new"
+    rm -f "$su_new" "$su_sig" "$su_ui_new"
+    if ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_new" "$RELEASE_BASE/tlstore" 2>/dev/null ||
+       ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_sig" "$RELEASE_BASE/tlstore.minisig" 2>/dev/null; then
         rm -f "$su_new" "$su_sig"
         return 0
     fi
@@ -2848,14 +2904,61 @@ self_update() {
         rm -f "$su_new" "$su_sig"
         return 0
     fi
-    if cp "$su_new" "$su_target.new" && chmod 755 "$su_target.new" &&
-       mv "$su_target.new" "$su_target"; then
-        say "tlstore is now version $su_version."
-    else
-        rm -f "$su_target.new"
-        err "could not put the newer tlstore in place"
+
+    # The store program, where one is in place to be kept in step.
+    su_ui_digest=""
+    if [ -f "$TLSTORE_UI_BIN" ]; then
+        su_abi=$(ui_abi)
+        su_key=$(printf '%s' "$su_abi" | tr '-' '_')
+        [ -z "$su_abi" ] || su_ui_digest=$(sed -n "s/^TLSTORE_UI_SHA256_$su_key=\([0-9a-f]\{64\}\)\$/\1/p" "$su_new" | head -1)
+        if [ -z "$su_ui_digest" ]; then
+            rm -f "$su_new" "$su_sig"
+            err "tlstore $su_version names no store program for this processor — keeping what you have"
+            return 0
+        fi
+        if ! curl -fsL --connect-timeout 5 --max-time 120 -o "$su_ui_new" "$RELEASE_BASE/tlstore-ui-$su_abi" 2>/dev/null; then
+            rm -f "$su_new" "$su_sig" "$su_ui_new"
+            err "could not download the store program that goes with tlstore $su_version — keeping what you have"
+            return 0
+        fi
+        if [ "$(file_digest "$su_ui_new")" != "$su_ui_digest" ]; then
+            rm -f "$su_new" "$su_sig" "$su_ui_new"
+            err "the store program that was offered does not match what tlstore $su_version expects — keeping what you have"
+            return 0
+        fi
     fi
-    rm -f "$su_new" "$su_sig"
+
+    # Stage both beside their targets, then rename: a copy that fails leaves
+    # everything as it was.
+    su_stage="$su_target.new"
+    su_ui_stage="$TLSTORE_UI_BIN.new"
+    if ! cp "$su_new" "$su_stage" || ! chmod 755 "$su_stage"; then
+        rm -f "$su_stage" "$su_new" "$su_sig" "$su_ui_new"
+        err "could not put the newer tlstore in place"
+        return 0
+    fi
+    if [ -n "$su_ui_digest" ]; then
+        if ! cp "$su_ui_new" "$su_ui_stage" || ! chmod 755 "$su_ui_stage"; then
+            rm -f "$su_stage" "$su_ui_stage" "$su_new" "$su_sig" "$su_ui_new"
+            err "could not put the newer store program in place — keeping what you have"
+            return 0
+        fi
+    fi
+    if ! mv "$su_stage" "$su_target"; then
+        rm -f "$su_stage" "$su_ui_stage" "$su_new" "$su_sig" "$su_ui_new"
+        err "could not put the newer tlstore in place"
+        return 0
+    fi
+    if [ -n "$su_ui_digest" ]; then
+        if mv "$su_ui_stage" "$TLSTORE_UI_BIN"; then
+            printf '%s\n' "$su_ui_digest" > "$(dirname "$TLSTORE_UI_BIN")/.tlstore-ui-sha256" 2>/dev/null || true
+        else
+            rm -f "$su_ui_stage"
+            err "could not put the newer store program in place"
+        fi
+    fi
+    rm -f "$su_new" "$su_sig" "$su_ui_new"
+    su_say "tlstore is now version $su_version."
     return 0
 }
 

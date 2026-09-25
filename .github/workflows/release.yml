@@ -4,11 +4,17 @@
 # does by hand:
 #
 #   test → rebuild tlstore-ui if ui/ changed → release.sh --prepare → sign.sh
-#   → release.sh → commit dist/ and SHA256SUMS → tag → push
+#   → release.sh → commit dist/ and SHA256SUMS → tag → push → GitHub Release
 #
 # and prints the lock block for the launcher's app/tlstore.lock in the run
-# summary. Binaries under bin/, hero/, readme/ are published as committed; build
-# those with recipes/ and commit them first.
+# summary. The GitHub Release <tag> is marked latest and carries dist/ as its
+# assets: phones refresh their catalog and update tlstore and tlstore-ui from
+# releases/latest/download (engine/tlstore, refresh_catalog and self_update),
+# while the launcher's gradle fetch keeps reading dist/ from the tag through raw
+# URLs, which is why dist/ is still committed. The catalog's binaries are
+# release assets of their own, built by build.yml; run that first when a tool
+# changed, so the committed items.tsv and SHA256SUMS already name the new tag.
+# Heroes and readmes under hero/ and readme/ are published as committed.
 #
 # Secrets (Settings › Secrets and variables › Actions):
 #   TLSTORE_SIGNING_KEY           the minisign secret key file's contents
@@ -106,6 +112,29 @@ jobs:
           git commit -m "Release $tag: signed catalog (serial $serial) and script, dist/ in SHA256SUMS"
           git tag "$tag"
           git push origin HEAD:main "refs/tags/$tag"
+
+      # The release phones read: releases/latest/download/<file>. --latest keeps
+      # it ahead of the bins-… prereleases build.yml makes.
+      - name: GitHub Release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          serial=$(sed -n 's/^#.*serial=\([0-9][0-9]*\).*$/\1/p' dist/catalog.tsv | head -1)
+          version=$(sed -n 's/^TLSTORE_VERSION=//p' dist/tlstore | head -1)
+          {
+            echo "tlstore $version, catalog serial $serial, signed."
+            echo
+            echo "Phones take \`tlstore\`, \`tlstore.minisig\`, \`catalog.tsv\`, \`catalog.tsv.minisig\` and \`tlstore-ui-<abi>\` from here (\`releases/latest/download/\`), verified against \`trusted.pub\`. The launcher pins the same files from \`dist/\` at this tag:"
+            echo
+            echo '```'
+            sed -n '/^tag /,$p' "$RUNNER_TEMP/release.out"
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$tag" --latest --title "tlstore $tag" --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/tlstore dist/tlstore.minisig dist/catalog.tsv dist/catalog.tsv.minisig \
+            dist/trusted.pub dist/tlstore-ui-arm64-v8a dist/tlstore-ui-x86_64
 
       - name: Lock block
         run: |

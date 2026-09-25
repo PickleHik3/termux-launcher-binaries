@@ -3,9 +3,11 @@
 This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; local
 checkout at `~/Projects/termux-launcher/tlstore`) is
 the self-contained home of `tlstore`, Termux Launcher's package store: the engine, the catalog and
-its inputs, the Rust store UI, the release/maintainer scripts, the design docs, and the prebuilt
-binaries the catalog installs. `dist/` is the tagged, signed release set the launcher actually
-consumes — everything else here is a source for it.
+its inputs, the Rust store UI, the release/maintainer scripts, the design docs, and the recipes
+for the prebuilt binaries the catalog installs — the binaries themselves are GitHub Release assets
+built by `.github/workflows/build.yml`, never committed. `dist/` is the tagged, signed release set
+the launcher consumes (and the assets of the store's GitHub Release, which phones read) —
+everything else here is a source for it.
 
 ## Layout
 
@@ -16,7 +18,8 @@ consumes — everything else here is a source for it.
 | `scripts/*.sh` | Build, test, sign and release tooling — see below. |
 | `ui/` | The Rust store UI crate, `tlstore-ui`. |
 | `dist/` | `tlstore`, `tlstore.minisig`, `catalog.tsv`, `catalog.tsv.minisig`, `trusted.pub`, `tlstore-ui-arm64-v8a`, `tlstore-ui-x86_64` — the release set a tag ships. Never hand-edited; `scripts/release.sh` writes it. |
-| `bin/`, `hero/`, `readme/`, `recipes/`, `licenses/`, `SHA256SUMS` | The showcase binaries (kitten, fastfetch, dawn, sigye, the musl runtime) the catalog also installs, and the recipes that build them. |
+| `recipes/`, `licenses/`, `SHA256SUMS`, `hero/`, `readme/` | The recipes that build the showcase binaries (kitten, fastfetch, dawn, sigye, btop, tl-priv, the musl runtime), the digests of the published assets and pinned files, and the pinned readmes and hero pictures themselves. The binaries are release assets: `.github/workflows/build.yml` builds them (`recipes/cross/build-asset.sh`), publishes a `bins-…` prerelease and records it with `scripts/bins-record.sh`. |
+| `.github/workflows/` | `ci.yml` (tests on every push), `build.yml` (binaries → release assets), `release.yml` (the signed store release). |
 | `docs/` | Design docs: `SPEC.md` and `REVISION-5.md`/`REVISION-6.md` (engine and UI history and current design), `docs/maintainer/catalog.md` (the day-to-day workflow), `docs/user/Tlstore.md` (user-facing), `docs/adr/` (architecture decisions). |
 
 ## Build and test commands
@@ -41,9 +44,15 @@ ANDROID_HOME=~/Android/Sdk bash scripts/build-ui.sh --install
 
 # Release flow — see docs/maintainer/catalog.md for the full walkthrough
 scripts/release.sh <tag> --prepare    # copy sources into dist/, build the catalog, check
-                                       # dist/tlstore-ui-<abi> freshness (scripts/check-dist.sh)
+                                       # dist/tlstore-ui-<abi> freshness (scripts/check-dist.sh),
+                                       # write the UI digests into dist/tlstore (embed-ui-digests.sh)
 bash scripts/sign.sh                  # the developer runs this by hand — needs the passphrase
 scripts/release.sh <tag>              # verify signatures, update SHA256SUMS, print the lock block
+
+# On GitHub instead (the normal way): binaries first when a tool changed, then the store release
+gh workflow run build.yml -f tools=all      # or tools=dawn,btop — publishes bins-… assets,
+                                            # commits SHA256SUMS + items.tsv to main
+gh workflow run release.yml                 # signs, commits dist/, tags, creates the release
 ```
 
 `scripts/release.sh` never tags or pushes. Never generate or commit a signing key; the key at
