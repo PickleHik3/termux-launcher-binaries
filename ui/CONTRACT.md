@@ -64,7 +64,7 @@ Binary: tlstore-ui | --probe | --version. Fixture store: tests/fixtures/store (s
 # preview renderer (cargo feature `shot`; dev only, build-ui.sh never enables it)
 tlstore-ui --shot <cols>x<rows> --screen <spec> --out <file.png> [--store <dir>]  |  --shot-all --out <dir> [--store <dir>]
   <spec>: front[:cursor] · front:selected=<a,b> · front:updates · item:<name>[:scroll] · installing:<name>:<pct>; --store defaults to
-  tests/fixtures/store (copied to a temp dir, pictures from scripts/tlstore/pictures, gh signed in). --shot-all: front, item:dawn,
+  tests/fixtures/store (copied to a temp dir, pictures from scripts/pictures, gh signed in). --shot-all: front, item:dawn,
   installing:dawn:64 at 53×26, 53×40, 40×24 as <slug>-<cols>x<rows>.png.
 Drives the real Router (Caps::all(), motion off, 12×26 px cells), settles every task (refresh, gh, picture, readme, assets) like
   tests/screens.rs, and paints the resting frame: surface, cell backgrounds, placements z<0, glyphs from bundled JetBrains Mono

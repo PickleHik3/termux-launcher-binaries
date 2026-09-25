@@ -92,7 +92,7 @@ impl H {
         let _ = std::fs::remove_dir_all(&dir);
         copy_dir(&manifest().join("tests/fixtures/store"), &dir);
         if o.pics {
-            copy_dir(&manifest().join("../../scripts/tlstore/pictures"), &dir.join("pics"));
+            copy_dir(&manifest().join("../scripts/pictures"), &dir.join("pics"));
         }
         if o.gh == Gh::SignedIn {
             std::fs::write(dir.join("gh-signed-in"), "").unwrap();

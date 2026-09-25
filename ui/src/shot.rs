@@ -164,7 +164,7 @@ impl Stage {
         let dir = std::env::temp_dir().join(format!("tlstore-shot-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         copy_dir(store, &dir)?;
-        let pictures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tlstore/pictures");
+        let pictures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/pictures");
         if !dir.join("pics").is_dir() && pictures.is_dir() {
             copy_dir(&pictures, &dir.join("pics"))?;
         }

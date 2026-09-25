@@ -4,13 +4,13 @@ use std::process::Command;
 /// Bakes a hash of this crate's sources into the binary as `TLSTORE_UI_SRC_HASH`, so
 /// `tlstore-ui --version` can prove which sources it was built from. `app/build.gradle`'s
 /// `checkTlstoreUiFresh` task recomputes the same hash from the working tree with
-/// `scripts/tlstore/ui-src-hash.sh` (the single source of truth for the algorithm — this file
+/// `scripts/ui-src-hash.sh` (the single source of truth for the algorithm — this file
 /// only ever shells out to it) and fails the build if a committed `tlstore-ui-<abi>` asset
 /// disagrees, which is how a source change without a `build-ui.sh --install` run gets caught
 /// before it ships.
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let script = manifest_dir.join("../../scripts/tlstore/ui-src-hash.sh");
+    let script = manifest_dir.join("../scripts/ui-src-hash.sh");
 
     let hash = Command::new("bash")
         .arg(&script)
