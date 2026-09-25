@@ -59,7 +59,7 @@ generator that needs a built kitty first.
 | `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty `v0.48.2`](https://github.com/kovidgoyal/kitty/tree/v0.48.2) |
 | `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/termux/fastfetch/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
 | `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
-| `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/cross/0001`–`0004-dawn-*.patch` (clipboard, AI chat, editing, frame dedup), for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
+| `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/cross/0001`–`0005-dawn-*.patch` (clipboard, AI chat, editing, frame dedup, note context), for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
 | `bin/dawn-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
 | `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/termux/sigye/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
 | `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/cross/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
@@ -203,7 +203,7 @@ api.anthropic.com, and the interactive UI.
 git clone --depth 1 --branch v0.48.2 https://github.com/kovidgoyal/kitty
 ```
 
-`dawn` is MIT, so its patched source is not an obligation, but the four patches that produced these
+`dawn` is MIT, so its patched source is not an obligation, but the five patches that produced these
 two binaries are in `recipes/cross/` and apply cleanly, in order, to `0e958747`:
 
 ```sh
@@ -211,7 +211,7 @@ git clone https://github.com/andrewmd5/dawn && cd dawn
 git checkout 0e9587477463ece157ef7eea66c9e34bc5c7737a
 git submodule update --init --recursive
 for p in 0001-dawn-termux-clipboard 0002-dawn-openai-bridge 0003-dawn-edit-tools \
-         0004-dawn-skip-unchanged-frames; do git apply /path/to/recipes/cross/$p.patch; done
+         0004-dawn-skip-unchanged-frames 0005-dawn-note-context; do git apply /path/to/recipes/cross/$p.patch; done
 ```
 
 `recipes/` holds the exact scripts these binaries were produced with, including the sysroot
@@ -225,7 +225,7 @@ If any source here becomes hard to obtain, open an issue and it will be provided
 - kitty / `kitten` — GPL-3.0-only, `licenses/kitty-GPL-3.0-only.txt`
 - Fastfetch — MIT, `licenses/fastfetch-MIT.txt`, modified by `recipes/termux/fastfetch/0001-kitty-animation.patch`
 - Sigye — MIT, `licenses/sigye-MIT.txt`, modified by `recipes/termux/sigye/0001-termux-clipboard.patch`
-- dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/cross/0001`–`0004-dawn-*.patch`
+- dawn — MIT, `licenses/dawn-MIT.txt`, modified by `recipes/cross/0001`–`0005-dawn-*.patch`
 - `libstdc++.so.6` and `libgcc_s.so.1` — GCC 14.2.0, GPL-3.0-or-later with the GCC Runtime Library
   Exception, `licenses/gcc-runtime-GPL-3.0-with-exception.txt`, unmodified. The corresponding
   source is GCC 14.2.0 as Alpine builds it:
