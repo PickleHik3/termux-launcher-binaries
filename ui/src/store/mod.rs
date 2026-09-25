@@ -776,6 +776,7 @@ pub fn header_for(
     let box_w = probe_hdr.content.w as u32 * cw as u32;
     let box_h = PICTURE_MAX_ROWS as u32 * ch as u32;
     // The probe is a still: it only measures, and may never be placed.
+    p.f.ctx.pics.card_edge = p.f.pal().rule;
     let probe = p.f.ctx.pics.header_picture(&path, box_w, box_h, false).ok();
     let Some(probe) = probe else {
         let pic_rows = reserve.then_some(u16::MAX);

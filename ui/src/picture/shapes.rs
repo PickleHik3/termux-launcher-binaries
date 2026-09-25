@@ -1,4 +1,4 @@
-//! The RGBA pictures the store draws itself: the header picture's bottom fade, the cursor
+//! The RGBA pictures the store draws itself: the header picture's card and fade, the cursor
 //! pill and the Installing progress line. Straight alpha, row-major, like every [`super::Picture`].
 
 use crate::render::Rgb;
@@ -19,6 +19,39 @@ pub fn fade_bottom(w: u32, h: u32, rgba: &mut [u8], frac: f32) {
             rgba[i] = (rgba[i] as f32 * keep).round() as u8;
         }
     }
+}
+
+/// Frames a header picture as a card: corners rounded to `radius` pixels (transparent outside,
+/// anti-aliased) and a hairline `edge` border, 1.5 px, drawn over the picture's own pixels, so
+/// a crop reads as a deliberate edge rather than a cut.
+pub fn card(w: u32, h: u32, rgba: &mut [u8], radius: f32, edge: Rgb) {
+    // Under 16 px a side there is no card to speak of, only a smudge of border.
+    if w < 16 || h < 16 {
+        return;
+    }
+    const LINE: f32 = 1.5;
+    for y in 0..h {
+        for x in 0..w {
+            let d = rounded_distance(x as f32 + 0.5, y as f32 + 0.5, w as f32, h as f32, radius);
+            let i = ((y * w + x) * 4) as usize;
+            let inside = coverage(d);
+            // The border: full on the band [-LINE, 0], soft on its inner side.
+            let ring = (coverage(d) * (d + LINE + 0.5).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+            let a = rgba[i + 3] as f32 / 255.0;
+            let out_a = ring + a * (1.0 - ring);
+            for c in 0..3 {
+                let e = [edge.0, edge.1, edge.2][c] as f32;
+                let v = if out_a > 0.0 { (e * ring + rgba[i + c] as f32 * a * (1.0 - ring)) / out_a } else { 0.0 };
+                rgba[i + c] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            rgba[i + 3] = (out_a * inside * 255.0).round() as u8;
+        }
+    }
+}
+
+/// The corner radius of a header card `w`×`h` pixels: about a third of a row on a phone.
+pub fn card_radius(w: u32, h: u32) -> f32 {
+    (w.min(h) as f32 * 0.08).clamp(4.0, 24.0)
 }
 
 /// Signed distance from (x, y) to a rounded rectangle `w`×`h` with corner radius `r`
@@ -50,6 +83,22 @@ pub fn pill(w: u32, h: u32, radius: f32, color: Rgb, alpha: f32) -> (u32, u32, V
         }
     }
     (w, h, rgba)
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+
+    #[test]
+    fn a_card_has_clear_corners_a_border_and_an_untouched_middle() {
+        let (w, h) = (40u32, 20u32);
+        let mut rgba: Vec<u8> = (0..w * h).flat_map(|_| [200, 10, 10, 255]).collect();
+        card(w, h, &mut rgba, 6.0, Rgb(0, 0, 255));
+        let px = |x: u32, y: u32| &rgba[((y * w + x) * 4) as usize..((y * w + x) * 4 + 4) as usize];
+        assert_eq!(px(0, 0)[3], 0, "the corner is cut away");
+        assert!(px(20, 0)[2] > 150, "the top edge is the border colour: {:?}", px(20, 0));
+        assert_eq!(px(20, 10), &[200, 10, 10, 255], "the middle is the picture");
+    }
 }
 
 /// The Installing progress line, `w` pixels wide inside a picture `h` pixels tall (one row):

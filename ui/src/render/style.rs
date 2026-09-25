@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 /// A 24-bit colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {

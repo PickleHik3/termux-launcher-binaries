@@ -250,6 +250,13 @@ impl<'p, 'a> Paint<'p, 'a> {
 const BLOCK_MARK: [&str; 2] = ["▀█▀ █  █▀▀ ▀█▀ █▀█ █▀█ █▀▀", " █  █▄ ▄▄█  █  █▄█ █▀▄ ██▄"];
 const BLOCK_MARK_W: u16 = 26;
 
+/// Right-aligns `text` at `right` in the list's category-tag face: two-thirds size (OSC 66),
+/// centred in its cells, so the counts read as a caption, not a heading.
+fn caption(p: &mut Paint, right: u16, y: u16, text: &str, style: Style) {
+    let x = right.saturating_sub(text_width(text) as u16);
+    p.sized(El::Context, x, y, text, Sizing { valign: 2, ..Sizing::frac(1, 2, 3) }, style);
+}
+
 fn count_line(items: usize, installed: usize) -> String {
     format!("{} item{} · {} installed", items, if items == 1 { "" } else { "s" }, installed)
 }
@@ -334,13 +341,13 @@ pub fn draw_header(p: &mut Paint, h: &Header, c: &HeaderContent) {
                 let count = count_line(*items, *installed);
                 let room = right.saturating_sub(mark_end + 2);
                 if text_width(&count) as u16 <= room {
-                    p.right(El::Context, right, y, &count, pal.dim_s());
+                    caption(p, right, y, &count, pal.rule_s());
                 }
             } else if mark_rows == 2 && *items > 0 {
                 let count = count_line(*items, *installed);
                 let room = right.saturating_sub(mark_end + 2);
                 if text_width(&count) as u16 <= room {
-                    p.right(El::Context, right, y + 1, &count, pal.dim_s());
+                    caption(p, right, y + 1, &count, pal.rule_s());
                 }
             }
             if *filter {

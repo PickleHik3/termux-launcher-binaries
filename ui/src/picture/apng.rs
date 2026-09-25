@@ -10,6 +10,7 @@ use png::{BlendOp, DisposeOp};
 
 use super::file::{self, Fit};
 use super::shapes;
+use crate::render::Rgb;
 
 /// One composed frame: how long it shows, and its pixels (straight RGBA, row-major).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,7 +224,7 @@ pub fn thin(cels: Vec<Cel>, stride: usize) -> Vec<Cel> {
 }
 
 /// The frame worker: composes every frame of the APNG in `bytes`, keeps every `stride`-th,
-/// fits each kept one into `box_w`×`box_h` (fading its bottom when `fade`, like the still)
+/// fits each kept one into `box_w`×`box_h` (framed as a card when `card` names an edge colour, like the still)
 /// and sends it down `tx` — the still's own gap first, then the frames after it. Stops
 /// quietly when the receiver is gone.
 pub fn stream(
@@ -231,7 +232,7 @@ pub fn stream(
     box_w: u32,
     box_h: u32,
     fit: Fit,
-    fade: bool,
+    card: Option<Rgb>,
     stride: usize,
     tx: &Sender<Msg>,
 ) -> io::Result<()> {
@@ -259,8 +260,8 @@ pub fn stream(
                 Vec::new()
             } else {
                 let (w, h, mut rgba) = file::fit_into(sw, sh, &cel.rgba, box_w, box_h, fit);
-                if fade {
-                    shapes::fade_bottom(w, h, &mut rgba, super::HEADER_FADE);
+                if let Some(edge) = card {
+                    shapes::card(w, h, &mut rgba, shapes::card_radius(w, h), edge);
                 }
                 rgba
             };
@@ -396,7 +397,7 @@ pub(crate) mod tests {
     fn the_worker_sends_the_still_gap_then_the_kept_frames_fitted() {
         let bytes = tiny_apng();
         let (tx, rx) = std::sync::mpsc::channel();
-        stream(&bytes, 4, 4, Fit::Contain, false, 2, &tx).unwrap();
+        stream(&bytes, 4, 4, Fit::Contain, None, 2, &tx).unwrap();
         drop(tx);
         let msgs: Vec<Msg> = rx.iter().collect();
         assert_eq!(msgs.len(), 2);
@@ -407,7 +408,7 @@ pub(crate) mod tests {
         assert_eq!(px(&f.rgba, 2, 2), RED);
         // Without thinning, every frame after the still comes through, scaled into the box.
         let (tx, rx) = std::sync::mpsc::channel();
-        stream(&bytes, 2, 2, Fit::Contain, false, 1, &tx).unwrap();
+        stream(&bytes, 2, 2, Fit::Contain, None, 1, &tx).unwrap();
         drop(tx);
         let msgs: Vec<Msg> = rx.iter().collect();
         assert_eq!(msgs.len(), 4);

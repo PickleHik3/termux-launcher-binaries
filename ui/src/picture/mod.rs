@@ -176,16 +176,21 @@ impl Picture {
 /// Caches every picture a run makes, so a word, file or shape is made once and keeps its
 /// kitty id (and so is uploaded once). Only one clip is kept at a time: a new one replaces
 /// the last, whose frames are freed.
+/// A fitted file's cache key: path, box width and height, fit, card edge, animated.
+type FileKey = (PathBuf, u32, u32, Fit, Option<Rgb>, bool);
+
 #[derive(Default)]
 pub struct Pictures {
     face: Option<fontdue::Font>,
     words: HashMap<(String, u32, Rgb), Picture>,
     marks: HashMap<(u32, Rgb), Picture>,
-    /// By path, box, fit, fade and whether the frames were wanted.
-    files: HashMap<(PathBuf, u32, u32, Fit, bool, bool), Picture>,
+    /// By path, box, fit, card edge and whether the frames were wanted.
+    files: HashMap<FileKey, Picture>,
     /// Files asked for as clips that turned out to be plain pictures.
     plain: HashSet<PathBuf>,
     shapes: HashMap<String, Picture>,
+    /// The hairline colour header pictures are framed in (the palette's `rule`).
+    pub card_edge: Rgb,
 }
 
 impl Pictures {
@@ -221,11 +226,11 @@ impl Pictures {
     /// A JPEG or PNG file scaled into a `box_w`×`box_h` pixel box (see [`Fit`]). Cached by
     /// path and box.
     pub fn file(&mut self, path: &Path, box_w: u32, box_h: u32, fit: Fit) -> io::Result<Picture> {
-        self.file_with(path, box_w, box_h, fit, false, false)
+        self.file_with(path, box_w, box_h, fit, None, false)
     }
 
-    /// A header picture: fitted to the box's width (cropped top and bottom when taller), its bottom [`HEADER_FADE`] faded to
-    /// transparent. With `animate`, an APNG file comes back as a clip: the first frame now,
+    /// A header picture: fitted to the box's width (its bottom cropped when taller) and framed
+    /// as a card — rounded corners and a hairline border in [`Pictures::card_edge`]. With `animate`, an APNG file comes back as a clip: the first frame now,
     /// the frames after it fitted and faded the same way by a worker thread, thinned to
     /// [`apng::MAX_CLIP_BYTES`] / [`apng::MAX_CLIP_FRAMES`]. Cached by path, box and `animate`.
     pub fn header_picture(
@@ -235,7 +240,7 @@ impl Pictures {
         box_h: u32,
         animate: bool,
     ) -> io::Result<Picture> {
-        self.file_with(path, box_w, box_h, Fit::Width, true, animate)
+        self.file_with(path, box_w, box_h, Fit::Width, Some(self.card_edge), animate)
     }
 
     fn file_with(
@@ -244,11 +249,11 @@ impl Pictures {
         box_w: u32,
         box_h: u32,
         fit: Fit,
-        fade: bool,
+        card: Option<Rgb>,
         animate: bool,
     ) -> io::Result<Picture> {
         let animate = animate && !self.plain.contains(path);
-        let key = (path.to_path_buf(), box_w, box_h, fit, fade, animate);
+        let key = (path.to_path_buf(), box_w, box_h, fit, card, animate);
         if let Some(p) = self.files.get(&key) {
             return Ok(p.clone());
         }
@@ -256,7 +261,7 @@ impl Pictures {
             let bytes = std::fs::read(path)?;
             return match apng::Apng::open(&bytes)? {
                 Some(a) => {
-                    let p = clip(a, &bytes, box_w, box_h, fit, fade)?;
+                    let p = clip(a, &bytes, box_w, box_h, fit, card)?;
                     // One clip at a time: the last one's frames go with it.
                     self.files.retain(|k, _| !k.5);
                     self.files.insert(key, p.clone());
@@ -264,13 +269,13 @@ impl Pictures {
                 }
                 None => {
                     self.plain.insert(path.to_path_buf());
-                    self.file_with(path, box_w, box_h, fit, fade, false)
+                    self.file_with(path, box_w, box_h, fit, card, false)
                 }
             };
         }
         let (w, h, mut rgba) = file::load_scaled(path, box_w, box_h, fit)?;
-        if fade {
-            shapes::fade_bottom(w, h, &mut rgba, HEADER_FADE);
+        if let Some(edge) = card {
+            shapes::card(w, h, &mut rgba, shapes::card_radius(w, h), edge);
         }
         let p = Picture::new(w, h, rgba);
         self.files.insert(key, p.clone());
@@ -309,7 +314,7 @@ fn clip(
     box_w: u32,
     box_h: u32,
     fit: Fit,
-    fade: bool,
+    card: Option<Rgb>,
 ) -> io::Result<Picture> {
     let (sw, sh) = apng.size();
     let frames = apng.frames() as usize;
@@ -317,9 +322,17 @@ fn clip(
         .next_frame()?
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "APNG without frames"))?;
     drop(apng);
+    // The crop is chosen once, on the first frame, and every frame is cut there.
+    let fit = match fit {
+        Fit::Width => {
+            let band = (box_h as f64 * sw as f64 / box_w.max(1) as f64).round() as u32;
+            Fit::WidthFrom(file::busiest_top(sw, sh, &first.rgba, band))
+        }
+        f => f,
+    };
     let (w, h, mut rgba) = file::fit_into(sw, sh, &first.rgba, box_w, box_h, fit);
-    if fade {
-        shapes::fade_bottom(w, h, &mut rgba, HEADER_FADE);
+    if let Some(edge) = card {
+        shapes::card(w, h, &mut rgba, shapes::card_radius(w, h), edge);
     }
     let stride = apng::stride(frames, rgba.len());
     if frames.div_ceil(stride) <= 1 {
@@ -329,7 +342,7 @@ fn clip(
     let owned = bytes.to_vec();
     let spawned = std::thread::Builder::new()
         .name("tlstore-hero".into())
-        .spawn(move || apng::stream(&owned, box_w, box_h, fit, fade, stride, &tx));
+        .spawn(move || apng::stream(&owned, box_w, box_h, fit, card, stride, &tx));
     Ok(match spawned {
         Ok(_) => Picture::streaming(w, h, rgba, rx),
         Err(_) => Picture::new(w, h, rgba),
