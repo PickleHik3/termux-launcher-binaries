@@ -19,6 +19,7 @@ does not print black. `[0]` on the source file selects a GIF's first frame.)
 | `kitten.jpg` | `docs/screenshots/diff.png` in [kovidgoyal/kitty](https://github.com/kovidgoyal/kitty) (the `kitten diff` screenshot, which shows an image diff — the closest upstream image to what this item does) | kitty is GPL-3.0 licensed |
 | `opencode.jpg` | `packages/web/src/assets/lander/screenshot.png` in [anomalyco/opencode](https://github.com/anomalyco/opencode) | opencode is MIT licensed |
 | `sigye.jpg` | first frame of `assets/demo.gif` in [am2rican5/sigye](https://github.com/am2rican5/sigye) | sigye is MIT licensed |
+| `btop.jpg` | a frame of the same screen recording as `hero/btop.png`: this build of btop running on a phone through the privileged lane | btop is Apache-2.0 licensed; the screenshot is this repository's own |
 
 `fish-shell` has no picture: it is the launcher's own setup, not one upstream project, so there is
 no single README to take a hero image from.

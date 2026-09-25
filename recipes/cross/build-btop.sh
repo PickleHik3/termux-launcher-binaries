@@ -25,7 +25,7 @@
 set -euo pipefail
 
 BTOP_URL="https://github.com/aristocratos/btop.git"
-BTOP_COMMIT="d43a485ef69eca4da321dcec4f4806a38460ef78"   # v1.4.7
+BTOP_COMMIT="6e39144aaf5a6bc01b9f795010b0914431067183"   # v1.4.7
 BTOP_VERSION="1.4.7"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PATCHES=(
