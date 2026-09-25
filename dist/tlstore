@@ -38,7 +38,7 @@
 
 set -u
 
-TLSTORE_VERSION=0.4
+TLSTORE_VERSION=0.5
 
 PREFIX="${TLSTORE_PREFIX:-${PREFIX:-${HOME%/files/home}/files/usr}}"
 HOME="${HOME:?tlstore needs HOME}"
@@ -54,6 +54,9 @@ esac
 
 BIN_DIR="$HOME/.local/bin"
 LIB_DIR="$HOME/.local/lib"
+# Where a priv=shizuku binary itself lives: off PATH, since what the user runs
+# is the wrapper in BIN_DIR that hands it to the launcher's privileged lane.
+PRIV_DIR="$LIB_DIR/tlstore/priv"
 DATA_DIR="$HOME/.local/share/tlstore"
 CACHE_DIR="$HOME/.cache/tlstore"
 STORE_DIR="$PREFIX/libexec/termux-launcher/tlstore"
@@ -172,6 +175,51 @@ die() { err "$*"; exit 1; }
 # the machine output itself, not incidental narration.
 progress_line() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"; }
 progress_done() { printf 'done\t%s\t%s\t%s\n' "$1" "$2" "$3"; }
+
+# progress_stage <pct> <words> — the job's item reached a step. Only moves
+# forward, so a step the work already reported (the download's own count, or
+# its checksum) is not reported again, and one it never reached (a pkg item
+# has no download of ours) still shows before "ready".
+PROGRESS_AT=0
+progress_stage() {
+    [ "$PROGRESS" = 1 ] && [ -n "$CANCEL_ITEM" ] || return 0
+    [ "$1" -gt "$PROGRESS_AT" ] || return 0
+    PROGRESS_AT=$1
+    progress_line step "$CANCEL_ITEM" "$1" "$2"
+}
+
+# The share of the bar a download fills: from the "fetched" step up to where
+# the checksum step starts.
+PROGRESS_FETCH_END=55
+
+# curl_to <url> <file> — download to a file. Inside a --progress job, for the
+# job's own item, curl's progress bar is turned into step lines as the bytes
+# arrive (one per whole percent of the bar, flushed), so the count and the line
+# move with the download instead of jumping from the first step to the last.
+curl_to() {
+    if [ "$PROGRESS" != 1 ] || [ -z "$CANCEL_ITEM" ]; then
+        curl -fsSL --connect-timeout 5 --speed-limit 1 --speed-time 30 -o "$2" "$1"
+        return
+    fi
+    ct_rc="$2.rc"
+    # curl's own exit status cannot come back through the pipe, so it goes
+    # through a file; -# draws "####   42.0%" frames separated by carriage
+    # returns on stderr, whatever stderr is.
+    { curl -fL -# --connect-timeout 5 --speed-limit 1 --speed-time 30 -o "$2" "$1" 2>&1
+      echo "$?" > "$ct_rc"; } |
+        tr '\r' '\n' |
+        awk -v name="$CANCEL_ITEM" -v from="$PROGRESS_AT" -v to="$PROGRESS_FETCH_END" '
+            match($0, /[0-9]+(\.[0-9]+)?%/) {
+                p = substr($0, RSTART, RLENGTH - 1) + 0
+                v = int(from + (to - from) * p / 100)
+                if (v > last) { last = v; printf "step\t%s\t%d\tfetched\n", name, v; fflush() }
+            }'
+    ct_status=$(cat "$ct_rc" 2>/dev/null || echo 1)
+    rm -f "$ct_rc"
+    [ "$ct_status" = 0 ] || return 1
+    PROGRESS_AT=$PROGRESS_FETCH_END
+    return 0
+}
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -303,52 +351,71 @@ row() {
     rows | awk -F "$TAB" -v want="$1" '$1 == want { print; exit }'
 }
 
-# Loads a row into it_* for the rest of the run.
+# Loads a row into it_* for the rest of the run. The row is split with
+# parameter expansion alone (no cut per field): a field beyond the row's end
+# reads as "", the way `cut -f` reports it, and an empty field stays empty.
 load_item() {
     it_row=$(row "$1")
     [ -n "$it_row" ] || return 1
-    it_name=$(field "$it_row" 1)
-    it_kind=$(field "$it_row" 2)
-    it_version=$(field "$it_row" 3)
-    # shellcheck disable=SC2034  # loaded for completeness; rows() did the matching
-    it_prefixes=$(field "$it_row" 4)
-    it_source=$(field "$it_row" 5)
-    it_digest=$(field "$it_row" 6)
-    it_target=$(field "$it_row" 7)
-    it_requires=$(field "$it_row" 8)
-    it_options=$(field "$it_row" 9)
-    it_summary=$(field "$it_row" 10)
-    # shellcheck disable=SC2034  # the Revision 5 fields, read out by cmd_info
-    it_category=$(field "$it_row" 11)
-    it_upstream=$(field "$it_row" 12)
-    it_setup=$(field "$it_row" 13)
-    it_standfirst=$(field "$it_row" 14)
-    it_does1=$(field "$it_row" 15)
-    it_does2=$(field "$it_row" 16)
-    it_does3=$(field "$it_row" 17)
-    it_try=$(field "$it_row" 18)
-    it_notes=$(field "$it_row" 19)
-    it_author=$(field "$it_row" 20)
-    it_licence=$(field "$it_row" 21)
-    it_size=$(field "$it_row" 22)
-    it_picture=$(field "$it_row" 23)
-    it_picture_digest=$(field "$it_row" 24)
-    it_demo=$(field "$it_row" 25)
-    it_featured=$(field "$it_row" 26)
+    it_name=""; it_kind=""; it_version=""; it_prefixes=""; it_source=""
+    it_digest=""; it_target=""; it_requires=""; it_options=""; it_summary=""
+    it_category=""; it_upstream=""; it_setup=""; it_standfirst=""
+    it_does1=""; it_does2=""; it_does3=""; it_try=""; it_notes=""
+    it_author=""; it_licence=""; it_size=""; it_picture=""
+    it_picture_digest=""; it_demo=""; it_featured=""; it_readme_skip=""
+    it_readme=""; it_readme_digest=""; it_demo_digest=""
+    # A trailing tab so the last field ends the way every other one does.
+    li_rest="$it_row$TAB"
+    li_i=1
+    while [ -n "$li_rest" ] && [ "$li_i" -le 30 ]; do
+        li_f="${li_rest%%$TAB*}"
+        li_rest="${li_rest#*$TAB}"
+        case "$li_i" in
+            1) it_name="$li_f" ;;
+            2) it_kind="$li_f" ;;
+            3) it_version="$li_f" ;;
+            # shellcheck disable=SC2034  # loaded for completeness; rows() did the matching
+            4) it_prefixes="$li_f" ;;
+            5) it_source="$li_f" ;;
+            6) it_digest="$li_f" ;;
+            7) it_target="$li_f" ;;
+            8) it_requires="$li_f" ;;
+            9) it_options="$li_f" ;;
+            10) it_summary="$li_f" ;;
+            # The Revision 5 fields, read out by cmd_info and cmd_snapshot.
+            11) it_category="$li_f" ;;
+            12) it_upstream="$li_f" ;;
+            13) it_setup="$li_f" ;;
+            14) it_standfirst="$li_f" ;;
+            15) it_does1="$li_f" ;;
+            16) it_does2="$li_f" ;;
+            17) it_does3="$li_f" ;;
+            18) it_try="$li_f" ;;
+            19) it_notes="$li_f" ;;
+            20) it_author="$li_f" ;;
+            21) it_licence="$li_f" ;;
+            22) it_size="$li_f" ;;
+            23) it_picture="$li_f" ;;
+            24) it_picture_digest="$li_f" ;;
+            25) it_demo="$li_f" ;;
+            26) it_featured="$li_f" ;;
+            27) it_readme_skip="$li_f" ;;
+            28) it_readme="$li_f" ;;
+            29) it_readme_digest="$li_f" ;;
+            30) it_demo_digest="$li_f" ;;
+        esac
+        li_i=$((li_i + 1))
+    done
     # Revision 6: the README sections tlstore-ui leaves out, |-separated. A
     # catalog from before the column has no field 27 at all, which reads as
     # "none" the same way "-" does.
-    it_readme_skip=$(field "$it_row" 27)
     [ -n "$it_readme_skip" ] || it_readme_skip="-"
     # Pinned content (Revision 6 addendum): a launcher:/binaries: source for a
     # pinned README (instead of fetching upstream) and its digest, plus the
     # demo picture's own digest. A catalog from before these columns has none
     # of the three, which reads as "-" the same way an explicit "-" does.
-    it_readme=$(field "$it_row" 28)
     [ -n "$it_readme" ] || it_readme="-"
-    it_readme_digest=$(field "$it_row" 29)
     [ -n "$it_readme_digest" ] || it_readme_digest="-"
-    it_demo_digest=$(field "$it_row" 30)
     [ -n "$it_demo_digest" ] || it_demo_digest="-"
     return 0
 }
@@ -402,15 +469,24 @@ source_url() {
     esac
 }
 
-# item_targets <name> <kind> <target> [source] — where an item's payload lands,
-# space separated; empty for pkg and bundles. An npm-musl item lands twice: the
-# directory, then the wrapper, which is named after the executable inside the
-# package (claude-code installs the command `claude`). A package that keeps its
-# executable in a subdirectory (npm:x#bin/y) still gets the bare name.
+# item_targets <name> <kind> <target> [source] [options] — where an item's
+# payload lands, space separated; empty for pkg and bundles. An npm-musl item
+# lands twice: the directory, then the wrapper, which is named after the
+# executable inside the package (claude-code installs the command `claude`). A
+# package that keeps its executable in a subdirectory (npm:x#bin/y) still gets
+# the bare name. A binary with priv=shizuku lands twice as well: the program
+# under PRIV_DIR, off PATH, then the wrapper on PATH that runs it through
+# tl-priv.
 item_targets() {
     case "$2" in
         binary|file|file-once)
-            if [ "$3" = "-" ] || [ -z "$3" ]; then
+            if [ "$2" = binary ] && [ "$(opt "${5:-}" priv)" = shizuku ]; then
+                if [ "$3" = "-" ] || [ -z "$3" ]; then
+                    printf '%s %s' "$PRIV_DIR/$1" "$BIN_DIR/$1"
+                else
+                    printf '%s %s' "$(expand_path "$3")" "$BIN_DIR/$1"
+                fi
+            elif [ "$3" = "-" ] || [ -z "$3" ]; then
                 [ "$2" = binary ] || return 0
                 printf '%s' "$BIN_DIR/$1"
             else
@@ -521,22 +597,28 @@ restore_backup() {
 # download <url> <destination> <sha256 or -> — CANCEL_TMP tracks the part
 # file while it is being written, so on_cancel can drop it if a SIGTERM lands
 # mid-download; nothing here is left behind once the function returns, either
-# way, since every exit path clears it again.
+# way, since every exit path clears it again. The part file carries this
+# process's pid, so two tlstores fetching the same file at once (a prefetch
+# lane and an item opened early) never write over each other: each verifies
+# its own copy and the last mv wins, whole. A payload can be hundreds of
+# megabytes on a slow link, so the timeout is on a stall (nothing for 30 s)
+# rather than on the whole transfer.
 download() {
     dl_url="$1"
     dl_dest="$2"
     dl_expect="$3"
     dl_dir=$(dirname "$dl_dest")
     mkdir -p "$dl_dir" || return 1
-    dl_tmp="$dl_dir/.$(basename "$dl_dest").part"
+    dl_tmp="$dl_dir/.$(basename "$dl_dest").$$.part"
     CANCEL_TMP="$dl_tmp"
-    if ! curl -fsSL -o "$dl_tmp" "$dl_url"; then
+    if ! curl_to "$dl_url" "$dl_tmp"; then
         rm -f "$dl_tmp"
         CANCEL_TMP=""
         err "could not download $(basename "$dl_dest")"
         return 1
     fi
     if [ "$dl_expect" != "-" ] && [ -n "$dl_expect" ]; then
+        progress_stage 60 "signature checked"
         dl_actual=$(file_digest "$dl_tmp")
         if [ -z "$dl_actual" ]; then
             rm -f "$dl_tmp"
@@ -551,6 +633,7 @@ download() {
             return 1
         fi
     fi
+    progress_stage 90 "putting files in place"
     mv "$dl_tmp" "$dl_dest" || { CANCEL_TMP=""; return 1; }
     CANCEL_TMP=""
     return 0
@@ -795,7 +878,15 @@ drop_build_tools() {
     ask_ny "Remove the tools that were only needed for installing ($(words_list "$db_pkgs"))?" || return 0
     # shellcheck disable=SC2086
     remove_pkg $db_pkgs >/dev/null 2>&1 || true
-    rm -rf "${CACHE_DIR:?}"/* 2>/dev/null || true
+    # What was downloaded to build: not the pictures and readmes tlstore-ui
+    # keeps (see "The asset cache" below), which stay until an item moves on.
+    for db_f in "${CACHE_DIR:?}"/*; do
+        [ -e "$db_f" ] || continue
+        case "${db_f##*/}" in
+            pictures|readme|snapshot.tsv) ;;
+            *) rm -rf "$db_f" 2>/dev/null || true ;;
+        esac
+    done
     say "Removed them, and cleared what was downloaded."
     return 0
 }
@@ -852,7 +943,8 @@ do_pkg() {
 }
 
 do_binary() {
-    db_dest=$(item_targets "$ii_name" binary "$ii_target")
+    db_targets=$(item_targets "$ii_name" binary "$ii_target" "$ii_source" "$ii_options")
+    db_dest="${db_targets%% *}"
     db_mode=$(opt "$ii_options" mode)
     [ -n "$db_mode" ] || db_mode=755
     say "installing $ii_name"
@@ -860,8 +952,26 @@ do_binary() {
     backup_existing "$db_dest"
     download "$(source_url "$ii_source")" "$db_dest" "$ii_digest" || return 1
     chmod "$db_mode" "$db_dest"
-    state_record "$ii_name" binary "$ii_version" "$db_dest"
-    say "  $db_dest"
+    if [ "$(opt "$ii_options" priv)" = shizuku ]; then
+        # The program stays off PATH. What the user runs is a wrapper that hands
+        # it to tl-priv, the client of the launcher's privileged lane, which
+        # starts it as the Shizuku shell user. tl-priv is a hidden binary item
+        # every such item requires, so it is in BIN_DIR by now.
+        db_wrapper="${db_targets#* }"
+        mkdir -p "$BIN_DIR"
+        backup_existing "$db_wrapper"
+        {
+            printf '#!%s/bin/sh\n' "$PREFIX"
+            printf '# written by termux-launcher\n'
+            printf 'exec "%s/tl-priv" run "%s" "$@"\n' "$BIN_DIR" "$db_dest"
+        } > "$db_wrapper"
+        chmod 755 "$db_wrapper"
+        state_record "$ii_name" binary "$ii_version" "$db_dest" "$db_wrapper"
+        say "  $db_wrapper"
+    else
+        state_record "$ii_name" binary "$ii_version" "$db_dest"
+        say "  $db_dest"
+    fi
     return 0
 }
 
@@ -979,7 +1089,7 @@ json_field() {
 npm_latest_version() {
     nl_package="${1#npm:}"
     nl_package="${nl_package%#*}"
-    curl -fsSL "$NPM_REGISTRY/$nl_package/latest" 2>/dev/null | json_field version
+    curl -fsSL --connect-timeout 5 --max-time 60 "$NPM_REGISTRY/$nl_package/latest" 2>/dev/null | json_field version
 }
 
 do_npm_musl() {
@@ -1003,7 +1113,7 @@ do_npm_musl() {
 
     say "installing $ii_name"
     np_want="${ii_version:-latest}"
-    np_meta=$(curl -fsSL "$NPM_REGISTRY/$np_package/$np_want") || {
+    np_meta=$(curl -fsSL --connect-timeout 5 --max-time 60 "$NPM_REGISTRY/$np_package/$np_want") || {
         err "could not reach the $ii_name download"
         return 1
     }
@@ -1024,7 +1134,7 @@ do_npm_musl() {
         np_tmp="$CACHE_DIR/$ii_name.tgz"
         mkdir -p "$CACHE_DIR"
         CANCEL_TMP="$np_tmp"
-        curl -fsSL -o "$np_tmp" "$np_tarball" || { rm -f "$np_tmp"; CANCEL_TMP=""; err "could not download $ii_name"; return 1; }
+        curl_to "$np_tarball" "$np_tmp" || { rm -f "$np_tmp"; CANCEL_TMP=""; err "could not download $ii_name"; return 1; }
         np_actual=$(sha512sum "$np_tmp" | cut -d' ' -f1)
         if [ "$np_actual" != "$np_expect" ]; then
             rm -f "$np_tmp"
@@ -1177,7 +1287,8 @@ refresh_catalog() {
     mkdir -p "$CACHE_DIR"
     rc_new="$CACHE_DIR/catalog.tsv"
     rc_sig="$CACHE_DIR/catalog.tsv.minisig"
-    if ! curl -fsL -o "$rc_new" "$CATALOG_URL" 2>/dev/null || ! curl -fsL -o "$rc_sig" "$CATALOG_URL.minisig" 2>/dev/null; then
+    if ! curl -fsL --connect-timeout 5 --max-time 60 -o "$rc_new" "$CATALOG_URL" 2>/dev/null ||
+       ! curl -fsL --connect-timeout 5 --max-time 60 -o "$rc_sig" "$CATALOG_URL.minisig" 2>/dev/null; then
         rm -f "$rc_new" "$rc_sig"
         [ "$rc_quiet" = 1 ] || say "Could not reach the item list; using the one you have."
         return 1
@@ -1396,7 +1507,7 @@ cmd_info() {
     [ -n "$ci_want" ] || { err "info needs one name"; return 2; }
     need_catalog
     load_item "$ci_want" || { err "$ci_want is not in the list"; return 1; }
-    ci_files=$(item_targets "$it_name" "$it_kind" "$it_target" "$it_source")
+    ci_files=$(item_targets "$it_name" "$it_kind" "$it_target" "$it_source" "$it_options")
     ci_where="$ci_files"
     case "$it_kind" in
         pkg) ci_where="$it_source" ;;
@@ -1478,6 +1589,51 @@ string_digest() {
     printf '%s' "$sd_out"
 }
 
+# ---------------------------------------------------------------------------
+# The asset cache — pictures, demos and readmes for tlstore-ui
+# ---------------------------------------------------------------------------
+#
+# Everything tlstore-ui shows lives under CACHE_DIR ($HOME/.cache/tlstore —
+# the Termux home, under the app's files directory, which Android leaves
+# alone; it is not the app's cache directory the system may clear):
+#
+#   pictures/<digest>.<ext>            a picture or demo, keyed by the catalog's
+#                                      digest (by the sha256 of its URL when an
+#                                      old catalog carries none)
+#   readme/pinned/<digest>.md          a pinned readme, keyed by its digest
+#   readme/<name>-<version>.md, .ref   an upstream readme and the revision it
+#                                      was read at, keyed by the item's version
+#   readme/<name>/<ref>/<urldigest>.<ext>
+#                                      a picture that readme refers to
+#   snapshot.tsv                       the last `snapshot --tsv`, with its key
+#   .changed                           touched whenever any of the above moves
+#
+# A digest-keyed file is final: it is fetched once and served for as long as
+# the catalog names that digest. A version-keyed one is fetched once per
+# version; `prefetch` revalidates it at most once a day (curl -z, in the
+# background), and `readme` / `readme-asset` — the open path — always serve
+# whatever copy is here, offline or not. `prefetch` also throws away what the
+# active catalog no longer names.
+
+# cache_stamp — something under CACHE_DIR changed (a fetch landed, an orphan
+# went), so the next `snapshot` knows its cached copy is stale.
+cache_stamp() {
+    mkdir -p "$CACHE_DIR"
+    touch "$CACHE_DIR/.changed"
+}
+
+# file_stamp <file> — its mtime and size, "-" when it is not there.
+file_stamp() {
+    [ -e "$1" ] || { printf '%s' -; return 0; }
+    stat -c '%Y.%s' "$1" 2>/dev/null || stat -f '%m.%z' "$1" 2>/dev/null || printf '?'
+}
+
+# stale_day <file> — is the copy a day old or more?
+stale_day() {
+    [ -f "$1" ] || return 1
+    [ -n "$(find "$1" -mtime +0 2>/dev/null)" ]
+}
+
 # A local, verified copy of <url> (checked against <digest> unless it is "-"),
 # cached under CACHE_DIR/pictures keyed by the digest so a second call for the
 # same picture never touches the network. Prints the path on success only.
@@ -1498,8 +1654,20 @@ cache_fetch() {
         return 0
     fi
     download "$cf_url" "$cf_dest" "$cf_digest" || return 1
+    cache_stamp
     printf '%s\n' "$cf_dest"
     return 0
+}
+
+# picture_fetch <source> <digest> — the cached, verified copy of a picture or
+# demo source field (the path `tlstore picture` prints), fetched when missing.
+picture_fetch() {
+    pf_url=$(source_url "$1")
+    pf_ext="${pf_url##*.}"
+    case "$pf_ext" in
+        ''|*[!a-zA-Z0-9]*) pf_ext=jpg ;;
+    esac
+    cache_fetch "$pf_url" "$2" "$pf_ext"
 }
 
 # tlstore picture <name> [demo] — for tlstore-ui: the local path of the item's
@@ -1536,12 +1704,7 @@ cmd_picture() {
         cp_digest="$it_picture_digest"
     fi
     [ "$cp_source" != "-" ] && [ -n "$cp_source" ] || return 1
-    cp_url=$(source_url "$cp_source")
-    cp_ext="${cp_url##*.}"
-    case "$cp_ext" in
-        ''|*[!a-zA-Z0-9]*) cp_ext=jpg ;;
-    esac
-    cache_fetch "$cp_url" "$cp_digest" "$cp_ext"
+    picture_fetch "$cp_source" "$cp_digest"
 }
 
 # ---------------------------------------------------------------------------
@@ -1576,15 +1739,26 @@ github_host_ok() {
     return 1
 }
 
-# quiet_fetch <https address> <destination> <cap in bytes, 0 for none> — a
-# silent download, written beside its destination first so a failure leaves
-# nothing behind. A missing file, a network error and a file over the cap all
-# fail the same way; the caller says what that means.
+# quiet_fetch <https address> <destination> <cap in bytes, 0 for none>
+# [<copy to revalidate>] — a silent download, written beside its destination
+# first (under this process's pid, so a prefetch lane and an item opened early
+# never share a part file) so a failure leaves nothing behind. A missing file,
+# a network error and a file over the cap all fail the same way; the caller
+# says what that means. With a fourth argument the request is conditional on
+# that copy's age (curl -z): when the server has nothing newer, nothing is
+# written and the function still succeeds — the caller checks for the file.
+# Five seconds to connect and a minute for the whole file: a readme is small.
 quiet_fetch() {
     qf_dir=$(dirname "$2")
     mkdir -p "$qf_dir" || return 1
-    qf_tmp="$qf_dir/.$(basename "$2").part"
-    if ! curl -fsL --max-filesize "$3" -o "$qf_tmp" "$(github_url "$1")" 2>/dev/null; then
+    qf_tmp="$qf_dir/.$(basename "$2").$$.part"
+    if [ -n "${4:-}" ]; then
+        if ! curl -fsL --connect-timeout 5 --max-time 60 --max-filesize "$3" -z "$4" -o "$qf_tmp" "$(github_url "$1")" 2>/dev/null; then
+            rm -f "$qf_tmp"
+            return 1
+        fi
+        [ -s "$qf_tmp" ] || { rm -f "$qf_tmp"; return 0; }
+    elif ! curl -fsL --connect-timeout 5 --max-time 60 --max-filesize "$3" -o "$qf_tmp" "$(github_url "$1")" 2>/dev/null; then
         rm -f "$qf_tmp"
         return 1
     fi
@@ -1594,12 +1768,6 @@ quiet_fetch() {
         return 1
     fi
     mv "$qf_tmp" "$2"
-}
-
-# fresh <file> — is there a copy, less than a day old?
-fresh() {
-    [ -f "$1" ] || return 1
-    [ -z "$(find "$1" -mtime +0 2>/dev/null)" ]
 }
 
 # readme_ref <version> — the revision an item's README is read at: the commit
@@ -1622,10 +1790,12 @@ readme_ref() {
 }
 
 # readme_resolve — after load_item: sets RD_PATH to the item's cached README
-# and RD_REF to the revision it was read at, fetching when the copy is missing
-# or a day old. A tag that is not there falls back to HEAD, and when nothing
-# can be fetched a stale copy still counts. Returns 1 when there is no copy at
-# all, 2 when the item has no upstream to read (a setup, or a part).
+# and RD_REF to the revision it was read at, fetching only when there is no
+# copy for this version yet. A tag that is not there falls back to HEAD. The
+# copy is keyed by the item's version, so a new one is fetched when the
+# catalog moves the item on; `prefetch` revalidates it once a day
+# (readme_revalidate). Returns 1 when there is no copy at all, 2 when the item
+# has no upstream to read (a setup, or a part).
 readme_resolve() {
     RD_PATH=""
     RD_REF=""
@@ -1634,12 +1804,13 @@ readme_resolve() {
     rd_md="$rd_dir/$it_name-$it_version.md"
     rd_reffile="$rd_dir/$it_name-$it_version.ref"
     rd_want=$(readme_ref "$it_version")
-    if ! fresh "$rd_md"; then
-        rd_new="$rd_dir/.$it_name-$it_version.new"
+    if [ ! -f "$rd_md" ]; then
+        rd_new="$rd_dir/.$it_name-$it_version.$$.new"
         for rd_try in "$rd_want" HEAD; do
             if quiet_fetch "$GITHUB_RAW/$it_upstream/$rd_try/README.md" "$rd_new" 0; then
                 mv "$rd_new" "$rd_md" || return 1
                 printf '%s\n' "$rd_try" > "$rd_reffile"
+                cache_stamp
                 break
             fi
             [ "$rd_try" != HEAD ] || break
@@ -1649,6 +1820,22 @@ readme_resolve() {
     RD_PATH="$rd_md"
     RD_REF=$(cat "$rd_reffile" 2>/dev/null || true)
     [ -n "$RD_REF" ] || RD_REF="$rd_want"
+    return 0
+}
+
+# readme_revalidate — after readme_resolve found a copy: once a day, asks
+# GitHub whether the README at that revision has moved (curl -z) and takes the
+# newer one when it has. Either way the copy's clock is reset, so the question
+# is asked at most daily, and a copy that cannot be checked stays as it is.
+readme_revalidate() {
+    [ -n "$RD_PATH" ] || return 0
+    stale_day "$RD_PATH" || return 0
+    rv_new="$CACHE_DIR/readme/.$it_name-$it_version.$$.new"
+    if quiet_fetch "$GITHUB_RAW/$it_upstream/$RD_REF/README.md" "$rv_new" 0 "$RD_PATH" && [ -s "$rv_new" ]; then
+        mv "$rv_new" "$RD_PATH" && cache_stamp
+    fi
+    rm -f "$rv_new"
+    touch "$RD_PATH" 2>/dev/null || true
     return 0
 }
 
@@ -1672,6 +1859,7 @@ readme_resolve_pinned() {
     fi
     mkdir -p "$rp_dir" || return 1
     download "$rp_url" "$rp_dest" "$it_readme_digest" || return 1
+    cache_stamp
     RD_PATH="$rp_dest"
     return 0
 }
@@ -1680,10 +1868,12 @@ readme_resolve_pinned() {
 # the catalog pins one (readme, readme-digest — see load_item), that digest-
 # verified copy is fetched, cached and served, and a mismatch is a hard
 # failure with no fallback to upstream. Otherwise the upstream README is read
-# at the revision the item is built from (readme_ref) and kept for a day
-# under CACHE_DIR/readme, as before. Prints the path alone on stdout; exits 1
-# with one line on stderr when nothing could be fetched and nothing is kept,
-# 2 when the item has no upstream and no pinned readme (a setup).
+# at the revision the item is built from (readme_ref) and kept under
+# CACHE_DIR/readme for as long as the item stays at that version; a copy that
+# is here is served at once, whatever its age (`prefetch` keeps it current).
+# Prints the path alone on stdout; exits 1 with one line on stderr when
+# nothing could be fetched and nothing is kept, 2 when the item has no
+# upstream and no pinned readme (a setup).
 cmd_readme() {
     [ $# -eq 1 ] || { err "readme needs one name"; return 2; }
     case "$1" in
@@ -1704,44 +1894,53 @@ cmd_readme() {
     esac
 }
 
-# tlstore readme-asset <name> <src> — for tlstore-ui: a picture the README
-# refers to, downloaded into CACHE_DIR/readme/<name>/ and kept for a day the
-# way the README is. <src> is the address as written in the README: relative
-# (resolved against the README's own revision on raw.githubusercontent.com)
-# or an https address on one of GitHub's hosts; anything else exits 1. At most
-# 5 MB. Prints the path alone on stdout.
-cmd_readme_asset() {
-    [ $# -eq 2 ] || { err "readme-asset needs a name and a picture address"; return 2; }
-    case "$1" in
-        -*) err "unknown option: $1"; return 2 ;;
-    esac
-    need_catalog
-    load_item "$1" || { err "$1 is not in the list"; return 1; }
-    ra_src="$2"
+# readme_asset_fetch <src> <revalidate 0|1> — after load_item: the cached copy
+# of a picture the item's README refers to, fetched when missing. <src> is
+# the address as written in the README: relative (resolved against the
+# README's own revision on raw.githubusercontent.com) or an https address on
+# one of GitHub's hosts; anything else returns 1. At most 5 MB. The copy lives
+# under CACHE_DIR/readme/<name>/<ref>/, keyed by the address, so it moves on
+# with the README's revision; with <revalidate> 1 (the prefetch) a copy a day
+# old is checked against GitHub first. Prints the path alone on stdout.
+readme_asset_fetch() {
+    ra_src="$1"
+    ra_reval="${2:-0}"
     case "$ra_src" in
         https://*)
             github_host_ok "$ra_src" || { err "$ra_src is not on GitHub — left alone"; return 1; }
-            ra_url="$ra_src"
             ;;
         *:*|//*)
             err "$ra_src is not on GitHub — left alone"
             return 1
             ;;
+    esac
+    # The README the address belongs to, and the revision its copy is kept
+    # under: the README's own, or the commit a pinned copy names on its first
+    # line (<!-- tlstore: pinned from owner/repo@sha -->), so the pictures go
+    # when the README moves on.
+    ra_pin=""
+    ra_rc=0
+    if [ "$it_readme" != "-" ]; then
+        readme_resolve_pinned || { err "could not fetch the readme for $it_name, so $ra_src has nothing to be relative to"; return 1; }
+        ra_pin=$(sed -n '1s/^<!-- tlstore: pinned from \([A-Za-z0-9._-]*\/[A-Za-z0-9._-]*\)@\([0-9a-f]*\) -->$/\1@\2/p' "$RD_PATH")
+        ra_ref="${ra_pin##*@}"
+        [ -n "$ra_ref" ] || ra_ref=pinned
+    else
+        readme_resolve
+        ra_rc=$?
+        ra_ref="${RD_REF:-HEAD}"
+    fi
+    case "$ra_src" in
+        https://*) ra_url="$ra_src" ;;
         *)
             ra_rel="${ra_src#./}"
             ra_rel="${ra_rel#/}"
             if [ "$it_readme" != "-" ]; then
-                # A pinned copy names the upstream commit it was taken from on
-                # its first line: <!-- tlstore: pinned from owner/repo@sha -->
-                readme_resolve_pinned || { err "could not fetch the readme for $it_name, so $ra_src has nothing to be relative to"; return 1; }
-                ra_pin=$(sed -n '1s/^<!-- tlstore: pinned from \([A-Za-z0-9._-]*\/[A-Za-z0-9._-]*\)@\([0-9a-f]*\) -->$/\1@\2/p' "$RD_PATH")
                 case "$ra_pin" in
                     */*@?*) ra_url="$GITHUB_RAW/${ra_pin%@*}/${ra_pin##*@}/$ra_rel" ;;
                     *) err "the pinned readme for $it_name does not say where it was taken from"; return 1 ;;
                 esac
             else
-                readme_resolve
-                ra_rc=$?
                 case "$ra_rc" in
                     0) ;;
                     2) err "$it_name has no readme: it does not come from a GitHub project"; return 2 ;;
@@ -1764,17 +1963,540 @@ cmd_readme_asset() {
             esac
             ;;
     esac
-    ra_dest="$CACHE_DIR/readme/$it_name/$(string_digest "$ra_url")$ra_ext"
-    if ! fresh "$ra_dest"; then
-        # A stale copy is only replaced by a fetch that worked, and stays
-        # when one did not.
-        ra_new="$CACHE_DIR/readme/$it_name/.$(basename "$ra_dest").new"
+    ra_dir="$CACHE_DIR/readme/$it_name/$ra_ref"
+    ra_dest="$ra_dir/$(string_digest "$ra_url")$ra_ext"
+    ra_new="$ra_dir/.$(basename "$ra_dest").$$.new"
+    if [ ! -f "$ra_dest" ]; then
         if quiet_fetch "$ra_url" "$ra_new" 5242880; then
             mv "$ra_new" "$ra_dest" || return 1
+            cache_stamp
         fi
+    elif [ "$ra_reval" = 1 ] && stale_day "$ra_dest"; then
+        # A stale copy is only replaced by a fetch that brought something
+        # newer, and its clock is reset either way.
+        if quiet_fetch "$ra_url" "$ra_new" 5242880 "$ra_dest" && [ -s "$ra_new" ]; then
+            mv "$ra_new" "$ra_dest" && cache_stamp
+        fi
+        rm -f "$ra_new"
+        touch "$ra_dest" 2>/dev/null || true
     fi
     [ -f "$ra_dest" ] || { err "could not fetch $ra_src for $it_name"; return 1; }
     printf '%s\n' "$ra_dest"
+    return 0
+}
+
+# tlstore readme-asset <name> <src> — for tlstore-ui: a picture the README
+# refers to (readme_asset_fetch), served from the cache whenever a copy is
+# here. Prints the path alone on stdout.
+cmd_readme_asset() {
+    [ $# -eq 2 ] || { err "readme-asset needs a name and a picture address"; return 2; }
+    case "$1" in
+        -*) err "unknown option: $1"; return 2 ;;
+    esac
+    need_catalog
+    load_item "$1" || { err "$1 is not in the list"; return 1; }
+    readme_asset_fetch "$2" 0
+}
+
+# readme_first_image <readme file> — the picture tlstore-ui puts in the
+# header: the first image before the first H2 (markdown or <img>), leaving
+# out SVGs, shields and badges the way the UI's parser does. Prints nothing
+# when there is none.
+readme_first_image() {
+    awk '
+        function usable(src) {
+            s = tolower(src)
+            sub(/[?#].*/, "", s)
+            if (s ~ /\.svg$/) return 0
+            if (index(tolower(src), "shields.io") > 0) return 0
+            if (index(tolower(src), "badge") > 0) return 0
+            if (index(tolower(src), "/badges/") > 0) return 0
+            return 1
+        }
+        /^##[ \t]/ || /^##$/ || /<[Hh]2[ >]/ { exit }
+        {
+            line = $0
+            while (match(line, /!\[[^]]*\]\([^)]*\)/)) {
+                src = substr(line, RSTART, RLENGTH)
+                sub(/^!\[[^]]*\]\(/, "", src)
+                sub(/\)$/, "", src)
+                sub(/[ \t].*/, "", src)
+                if (src != "" && usable(src)) { print src; exit }
+                line = substr(line, RSTART + RLENGTH)
+            }
+            line = $0
+            while (match(line, /<[Ii][Mm][Gg][ \t][^>]*>/)) {
+                tag = substr(line, RSTART, RLENGTH)
+                if (match(tag, /[Ss][Rr][Cc][ \t]*=[ \t]*"[^"]*"/)) {
+                    src = substr(tag, RSTART, RLENGTH)
+                    sub(/^[Ss][Rr][Cc][ \t]*=[ \t]*"/, "", src)
+                    sub(/"$/, "", src)
+                } else if (match(tag, /[Ss][Rr][Cc][ \t]*=[ \t]*'"'"'[^'"'"']*'"'"'/)) {
+                    src = substr(tag, RSTART, RLENGTH)
+                    sub(/^[Ss][Rr][Cc][ \t]*=[ \t]*'"'"'/, "", src)
+                    sub(/'"'"'$/, "", src)
+                } else {
+                    src = ""
+                }
+                if (src != "" && usable(src)) { print src; exit }
+                line = substr(line, RSTART + RLENGTH)
+            }
+        }' "$1"
+}
+
+# ---------------------------------------------------------------------------
+# One snapshot and one prefetch, for tlstore-ui
+# ---------------------------------------------------------------------------
+
+# snapshot_key — what `snapshot` reads: the catalog and the installed list
+# (by name, mtime and size), the cache's stamp, and everything rows() filters
+# on. When none of it changed, neither did the answer.
+snapshot_key() {
+    printf 'v=%s;serial=%s;catalog=%s:%s;state=%s;cache=%s;host=%s;arch=%s;pkg=%s;lver=%s;home=%s;prefix=%s' \
+        "$TLSTORE_VERSION" "$CATALOG_SERIAL" "$CATALOG" "$(file_stamp "$CATALOG")" \
+        "$(file_stamp "$STATE")" "$(file_stamp "$CACHE_DIR/.changed")" \
+        "$HOST" "$ARCH_OK" "$APP_PACKAGE" "$LAUNCHER_VERSION" "$HOME" "$PREFIX"
+}
+
+# snapshot_rows — one awk pass over every row that applies here and the
+# installed list: the `item` line of every visible item (the list --tsv
+# columns), its `field` lines (the info --tsv rows, same keys, same order),
+# an `update` line per installed item with a newer version here (the update
+# --check --tsv --offline columns), and, for snapshot_cached to turn into
+# `cached` lines, a `check` (path known) or `probe` (path keyed by the URL's
+# digest) line per picture, demo and readme.
+snapshot_rows() {
+    rows | awk -F "$TAB" -v OFS="$TAB" -v state="$STATE" -v home="$HOME" \
+        -v bindir="$BIN_DIR" -v libdir="$LIB_DIR" -v privdir="$PRIV_DIR" \
+        -v cachedir="$CACHE_DIR" -v launcher_raw="$LAUNCHER_RAW" -v binaries_raw="$BINARIES_RAW" '
+        function optval(list, key,   n, i, parts) {
+            n = split(list, parts, ";")
+            for (i = 1; i <= n; i++)
+                if (index(parts[i], key "=") == 1)
+                    return substr(parts[i], length(key) + 2)
+            return ""
+        }
+        function dash(v) { return (v == "") ? "-" : v }
+        function expand(p) {
+            if (p == "~") return home
+            if (substr(p, 1, 2) == "~/") return home substr(p, 2)
+            return p
+        }
+        # item_targets, as the shell does it.
+        function targets(name, kind, target, source, opts,   exe, n, parts) {
+            if (kind == "binary" || kind == "file" || kind == "file-once") {
+                if (kind == "binary" && optval(opts, "priv") == "shizuku") {
+                    if (target == "-" || target == "") return privdir "/" name " " bindir "/" name
+                    return expand(target) " " bindir "/" name
+                }
+                if (target == "-" || target == "") return (kind == "binary") ? bindir "/" name : ""
+                return expand(target)
+            }
+            if (kind == "npm-musl") {
+                n = split(source, parts, "#")
+                exe = (n > 1) ? parts[n] : name
+                sub(/.*\//, "", exe)
+                if (target == "-" || target == "") return libdir "/" name " " bindir "/" exe
+                return expand(target) " " bindir "/" exe
+            }
+            return ""
+        }
+        # source_url, as the shell does it.
+        function url_of(src,   rest, path, tag) {
+            if (index(src, "launcher:") == 1) {
+                rest = substr(src, 10)
+                tag = rest; sub(/.*@/, "", tag)
+                path = rest; sub(/@[^@]*$/, "", path)
+                return launcher_raw "/" tag "/" path
+            }
+            if (index(src, "binaries:") == 1) {
+                rest = substr(src, 10)
+                tag = rest; sub(/.*@/, "", tag)
+                path = rest; sub(/@[^@]*$/, "", path)
+                if (index(path, "/") > 0) return binaries_raw "/" tag "/" path
+                return binaries_raw "/" tag "/bin/" path "-aarch64"
+            }
+            return src
+        }
+        function ext_of(url,   e) {
+            e = url
+            sub(/.*\./, "", e)
+            if (e == "" || e ~ /[^a-zA-Z0-9]/) e = "jpg"
+            return e
+        }
+        function put(name, key, value) { print "field", name, key, value }
+        function put_known(name, key, value) { if (value != "-") put(name, key, value) }
+        function asset(name, what, src, digest,   url) {
+            url = url_of(src)
+            if (digest != "-" && digest != "") print "check", name, what, cachedir "/pictures/" digest "." ext_of(url)
+            else print "probe", name, what, url, ext_of(url)
+        }
+        BEGIN {
+            while ((getline line < state) > 0) {
+                if (line ~ /^#/) continue
+                n = split(line, f, "\t")
+                if (n > 0 && f[1] != "") { inst[f[1]] = 1; iver[f[1]] = f[3] }
+            }
+            close(state)
+        }
+        {
+            name = $1; kind = $2; ver = $3; src = $5; dig = $6; target = $7
+            req = $8; opts = $9; summary = $10
+            hidden = (opts ~ /(^|;)hidden=1(;|$)/)
+            have = (name in inst) ? iver[name] : ""
+            if (!hidden) {
+                print "item", name, (name in inst) ? "installed" : "available", ver, have, kind, summary, dash($11), $26
+                where = targets(name, kind, target, src, opts)
+                if (kind == "pkg") where = src
+                else if (kind == "bundle") where = "-"
+                if (where == "") where = "-"
+                build = optval(opts, "build")
+                put(name, "Kind", kind)
+                put(name, "Version", ver)
+                put(name, "From", src)
+                put(name, "Checksum", dig)
+                put(name, "Needs", req)
+                if (build != "") put(name, "Builds with", build)
+                put(name, "Files", where)
+                if (name in inst) put(name, "Installed", have)
+                put(name, "Summary", summary)
+                put_known(name, "Category", dash($11))
+                put_known(name, "Upstream", dash($12))
+                put(name, "Setup", $13)
+                put_known(name, "Standfirst", dash($14))
+                put_known(name, "Does1", dash($15))
+                put_known(name, "Does2", dash($16))
+                put_known(name, "Does3", dash($17))
+                put_known(name, "Try", dash($18))
+                put_known(name, "Notes", dash($19))
+                put_known(name, "Author", dash($20))
+                put_known(name, "Licence", dash($21))
+                put_known(name, "Size", dash($22))
+                if (dash($23) != "-") {
+                    put(name, "Picture", $23)
+                    put(name, "Picture-digest", $24)
+                }
+                if (dash($25) != "-") {
+                    put(name, "Demo", $25)
+                    put_known(name, "Demo-digest", dash($30))
+                }
+                put(name, "Featured", $26)
+                put_known(name, "Readme-skip", dash($27))
+                if (dash($28) != "-") {
+                    put(name, "Readme", $28)
+                    put_known(name, "Readme-digest", dash($29))
+                }
+            }
+            if (name in inst) {
+                upd = 0
+                if (kind == "pkg" || kind == "bundle" || kind == "fisher") upd = 0
+                else if (kind == "npm-musl") upd = (ver != "latest" && ver != have)
+                else upd = (ver != have)
+                if (upd) print "update", name, have, ver, (kind == "file") ? "config-asks" : ""
+            }
+            if (!hidden) {
+                if (dash($23) != "-") asset(name, "picture", $23, dash($24))
+                if (dash($25) != "-") asset(name, "demo", $25, dash($30))
+                if (dash($28) != "-") print "check", name, "readme", cachedir "/readme/pinned/" dash($29) ".md"
+                else if (dash($12) != "-") print "check", name, "readme", cachedir "/readme/" name "-" ver ".md"
+            }
+        }'
+}
+
+# snapshot_cached — passes snapshot_rows through, turning each `check` and
+# `probe` line into a `cached` line when the file is really here (nothing is
+# forked for a check; a probe hashes the URL, as cache_fetch does).
+snapshot_cached() {
+    while IFS= read -r sc_line; do
+        case "$sc_line" in
+            "check$TAB"*|"probe$TAB"*)
+                sc_kind="${sc_line%%$TAB*}"
+                sc_rest="${sc_line#*$TAB}"
+                sc_name="${sc_rest%%$TAB*}"
+                sc_rest="${sc_rest#*$TAB}"
+                sc_what="${sc_rest%%$TAB*}"
+                sc_rest="${sc_rest#*$TAB}"
+                if [ "$sc_kind" = probe ]; then
+                    sc_url="${sc_rest%%$TAB*}"
+                    sc_ext="${sc_rest#*$TAB}"
+                    sc_path="$CACHE_DIR/pictures/$(string_digest "$sc_url").$sc_ext"
+                else
+                    sc_path="$sc_rest"
+                fi
+                if [ -f "$sc_path" ]; then
+                    printf 'cached\t%s\t%s\t%s\n' "$sc_name" "$sc_what" "$sc_path"
+                fi
+                ;;
+            *) printf '%s\n' "$sc_line" ;;
+        esac
+    done
+    return 0
+}
+
+# tlstore snapshot --tsv — for tlstore-ui: everything its screens need, in one
+# run. Line-typed, tab-separated, comment lines starting with #:
+#   item    name state version installed kind summary category featured
+#   field   name key value             (the info --tsv rows, one per line)
+#   update  name installed available note
+#   cached  name picture|demo|readme path   (a verified copy already here)
+# The answer is kept under CACHE_DIR/snapshot.tsv with its key (snapshot_key)
+# on the first line, and served from there while nothing it reads has moved.
+cmd_snapshot() {
+    sn_tsv=0
+    for sn_a in "$@"; do
+        case "$sn_a" in
+            --tsv) sn_tsv=1 ;;
+            *) err "unknown option: $sn_a"; return 2 ;;
+        esac
+    done
+    [ "$sn_tsv" = 1 ] || { err "snapshot is for programs: use --tsv"; return 2; }
+    need_catalog
+    sn_key=$(snapshot_key)
+    sn_file="$CACHE_DIR/snapshot.tsv"
+    sn_head="# tlstore snapshot${TAB}key=$sn_key"
+    if [ -f "$sn_file" ] && [ "$(head -1 "$sn_file" 2>/dev/null)" = "$sn_head" ]; then
+        cat "$sn_file"
+        return 0
+    fi
+    mkdir -p "$CACHE_DIR"
+    sn_tmp="$sn_file.$$.new"
+    {
+        printf '%s\n' "$sn_head"
+        snapshot_rows | snapshot_cached
+    } > "$sn_tmp" || { rm -f "$sn_tmp"; return 1; }
+    mv "$sn_tmp" "$sn_file" || { rm -f "$sn_tmp"; return 1; }
+    cat "$sn_file"
+    return 0
+}
+
+# prefetch_say <ready|failed> <name> <kind> <path or reason> [src] — one line
+# of the prefetch stream, written whole (one short printf is one write).
+prefetch_say() {
+    if [ $# -ge 5 ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
+    else
+        printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"
+    fi
+}
+
+# prefetch_item <name> — after need_catalog: the item's picture, demo, readme
+# and the readme's first image, one line each as it lands. What is cached
+# and verified is answered without a fetch.
+prefetch_item() {
+    load_item "$1" || return 0
+    if [ "$it_picture" != "-" ] && [ -n "$it_picture" ]; then
+        if pi_p=$(picture_fetch "$it_picture" "$it_picture_digest" 2>/dev/null); then
+            prefetch_say ready "$it_name" picture "$pi_p"
+        else
+            prefetch_say failed "$it_name" picture "not fetched or not verified"
+        fi
+    fi
+    if [ "$it_demo" != "-" ] && [ -n "$it_demo" ]; then
+        if pi_p=$(picture_fetch "$it_demo" "$it_demo_digest" 2>/dev/null); then
+            prefetch_say ready "$it_name" demo "$pi_p"
+        else
+            prefetch_say failed "$it_name" demo "not fetched or not verified"
+        fi
+    fi
+    RD_PATH=""
+    RD_REF=""
+    if [ "$it_readme" != "-" ]; then
+        if readme_resolve_pinned 2>/dev/null; then
+            prefetch_say ready "$it_name" readme "$RD_PATH"
+        else
+            prefetch_say failed "$it_name" readme "not fetched or not verified"
+        fi
+    elif [ -n "$it_upstream" ] && [ "$it_upstream" != "-" ]; then
+        readme_resolve 2>/dev/null
+        pi_rc=$?
+        if [ "$pi_rc" = 0 ]; then
+            readme_revalidate
+            prefetch_say ready "$it_name" readme "$RD_PATH"
+        elif [ "$pi_rc" = 1 ]; then
+            prefetch_say failed "$it_name" readme "not fetched, and no copy is kept"
+        fi
+    fi
+    [ -n "$RD_PATH" ] || return 0
+    pi_src=$(readme_first_image "$RD_PATH")
+    [ -n "$pi_src" ] || return 0
+    if pi_a=$(readme_asset_fetch "$pi_src" 1 2>/dev/null); then
+        prefetch_say ready "$it_name" asset "$pi_a" "$pi_src"
+    else
+        prefetch_say failed "$it_name" asset "not fetched" "$pi_src"
+    fi
+    return 0
+}
+
+# prefetch_gc — throws away what the active catalog no longer names: a
+# picture whose digest is gone, a pinned readme likewise, an upstream readme
+# for a version an item has moved past, and a readme's pictures for an item
+# or a revision that is gone. Files a fetch is still writing (dot files) are
+# never touched.
+prefetch_gc() {
+    [ -d "$CACHE_DIR" ] || return 0
+    gc_pics=" "
+    gc_pins=" "
+    gc_mds=" "
+    gc_names=" "
+    gc_subs=" "
+    gc_changed=0
+    gc_list=$(rows | awk -F "$TAB" -v OFS="$TAB" -v cachedir="$CACHE_DIR" \
+        -v launcher_raw="$LAUNCHER_RAW" -v binaries_raw="$BINARIES_RAW" '
+        function dash(v) { return (v == "") ? "-" : v }
+        function url_of(src,   rest, path, tag) {
+            if (index(src, "launcher:") == 1) {
+                rest = substr(src, 10)
+                tag = rest; sub(/.*@/, "", tag)
+                path = rest; sub(/@[^@]*$/, "", path)
+                return launcher_raw "/" tag "/" path
+            }
+            if (index(src, "binaries:") == 1) {
+                rest = substr(src, 10)
+                tag = rest; sub(/.*@/, "", tag)
+                path = rest; sub(/@[^@]*$/, "", path)
+                if (index(path, "/") > 0) return binaries_raw "/" tag "/" path
+                return binaries_raw "/" tag "/bin/" path "-aarch64"
+            }
+            return src
+        }
+        function ext_of(url,   e) {
+            e = url
+            sub(/.*\./, "", e)
+            if (e == "" || e ~ /[^a-zA-Z0-9]/) e = "jpg"
+            return e
+        }
+        function asset(src, digest,   url) {
+            url = url_of(src)
+            if (digest != "-") print "pic", digest "." ext_of(url)
+            else print "picurl", url, ext_of(url)
+        }
+        {
+            name = $1; ver = $3
+            if (dash($23) != "-") asset($23, dash($24))
+            if (dash($25) != "-") asset($25, dash($30))
+            print "name", name
+            if (dash($28) != "-") {
+                print "pin", dash($29) ".md"
+                # Its pictures live under the commit the pinned copy names.
+                pinfile = cachedir "/readme/pinned/" dash($29) ".md"
+                keep = "*"
+                if ((getline first < pinfile) > 0 && match(first, /@[0-9a-f][0-9a-f]* -->$/))
+                    keep = substr(first, RSTART + 1, RLENGTH - 5)
+                close(pinfile)
+                print "sub", name, keep
+            } else if (dash($12) != "-") {
+                print "md", name "-" ver
+                print "sub", name, "HEAD"
+                print "sub", name, "v" ver
+                hash = ver
+                if (sub(/^[^+]*\+/, "", hash)) { sub(/[^0-9a-fA-F].*/, "", hash); if (length(hash) >= 7) print "sub", name, hash }
+                reffile = cachedir "/readme/" name "-" ver ".ref"
+                if ((getline r < reffile) > 0 && r != "") print "sub", name, r
+                close(reffile)
+            }
+        }')
+    while IFS= read -r gc_line; do
+        gc_t="${gc_line%%$TAB*}"
+        gc_rest="${gc_line#*$TAB}"
+        case "$gc_t" in
+            pic) gc_pics="$gc_pics$gc_rest " ;;
+            picurl)
+                gc_url="${gc_rest%%$TAB*}"
+                gc_ext="${gc_rest#*$TAB}"
+                gc_pics="$gc_pics$(string_digest "$gc_url").$gc_ext "
+                ;;
+            pin) gc_pins="$gc_pins$gc_rest " ;;
+            md) gc_mds="$gc_mds$gc_rest " ;;
+            name) gc_names="$gc_names$gc_rest " ;;
+            sub) gc_subs="$gc_subs${gc_rest%%$TAB*}/${gc_rest#*$TAB} " ;;
+        esac
+    done <<EOF
+$gc_list
+EOF
+    for gc_f in "$CACHE_DIR/pictures"/*; do
+        [ -e "$gc_f" ] || continue
+        case "$gc_pics" in
+            *" ${gc_f##*/} "*) ;;
+            *) rm -f "$gc_f" && gc_changed=1 ;;
+        esac
+    done
+    for gc_f in "$CACHE_DIR/readme/pinned"/*; do
+        [ -e "$gc_f" ] || continue
+        case "$gc_pins" in
+            *" ${gc_f##*/} "*) ;;
+            *) rm -f "$gc_f" && gc_changed=1 ;;
+        esac
+    done
+    for gc_f in "$CACHE_DIR/readme"/*; do
+        [ -e "$gc_f" ] || continue
+        gc_b="${gc_f##*/}"
+        if [ -d "$gc_f" ]; then
+            [ "$gc_b" != pinned ] || continue
+            case "$gc_names" in
+                *" $gc_b "*) ;;
+                *) rm -rf "$gc_f" && gc_changed=1; continue ;;
+            esac
+            case "$gc_subs" in
+                *" $gc_b/* "*) continue ;;
+            esac
+            for gc_s in "$gc_f"/*; do
+                [ -e "$gc_s" ] || continue
+                gc_r="${gc_s##*/}"
+                if [ -d "$gc_s" ]; then
+                    case "$gc_subs" in
+                        *" $gc_b/$gc_r "*) ;;
+                        *) rm -rf "$gc_s" && gc_changed=1 ;;
+                    esac
+                else
+                    # A picture from before revisions had directories of their own.
+                    rm -f "$gc_s" && gc_changed=1
+                fi
+            done
+        else
+            gc_stem="${gc_b%.md}"
+            gc_stem="${gc_stem%.ref}"
+            case "$gc_mds" in
+                *" $gc_stem "*) ;;
+                *) rm -f "$gc_f" && gc_changed=1 ;;
+            esac
+        fi
+    done
+    [ "$gc_changed" = 0 ] || cache_stamp
+    return 0
+}
+
+# tlstore prefetch — for tlstore-ui: after throwing away what the catalog no
+# longer names (prefetch_gc), fetches every picture, demo, readme and readme
+# header picture that is missing, the featured items first and then in list
+# order, three items at a time, and prints one line per asset as it lands:
+#   ready   name  picture|demo|readme  path
+#   ready   name  asset                path  src
+#   failed  name  kind                 reason  [src]
+# What is cached and verified costs no network at all. Exits 0 once every
+# item has been seen.
+cmd_prefetch() {
+    [ $# -eq 0 ] || { err "prefetch takes no arguments"; return 2; }
+    need_catalog
+    prefetch_gc
+    pf_names=$(visible_rows | awk -F "$TAB" '
+        $26 == "1" { print $1; next }
+        { later = later "\n" $1 }
+        END { printf "%s", substr(later, 2) }')
+    pf_lanes=3
+    pf_k=0
+    while [ "$pf_k" -lt "$pf_lanes" ]; do
+        (
+            pf_i=0
+            for pf_n in $pf_names; do
+                if [ $((pf_i % pf_lanes)) -eq "$pf_k" ]; then
+                    prefetch_item "$pf_n"
+                fi
+                pf_i=$((pf_i + 1))
+            done
+        ) &
+        pf_k=$((pf_k + 1))
+    done
+    wait
     return 0
 }
 
@@ -1829,12 +2551,13 @@ cmd_install() {
     for ci_n in $ci_plan; do
         if [ "$PROGRESS" = 1 ]; then
             CANCEL_ITEM="$ci_n"
-            progress_line step "$ci_n" 10 fetched
+            PROGRESS_AT=0
+            progress_stage 10 fetched
             PROGRESS_NOTE=""
             if install_item "$ci_n"; then
-                progress_line step "$ci_n" 60 "signature checked"
-                progress_line step "$ci_n" 90 "putting files in place"
-                progress_line step "$ci_n" 100 ready
+                progress_stage 60 "signature checked"
+                progress_stage 90 "putting files in place"
+                progress_stage 100 ready
                 progress_done "$ci_n" ok "${PROGRESS_NOTE:-installed}"
             else
                 FAILED=1
@@ -2026,12 +2749,13 @@ update_items() {
         for cu_n in $cu_out; do
             if [ "$PROGRESS" = 1 ]; then
                 CANCEL_ITEM="$cu_n"
-                progress_line step "$cu_n" 10 fetched
+                PROGRESS_AT=0
+                progress_stage 10 fetched
                 PROGRESS_NOTE=""
                 if install_item "$cu_n" 1; then
-                    progress_line step "$cu_n" 60 "signature checked"
-                    progress_line step "$cu_n" 90 "putting files in place"
-                    progress_line step "$cu_n" 100 ready
+                    progress_stage 60 "signature checked"
+                    progress_stage 90 "putting files in place"
+                    progress_stage 100 ready
                     progress_done "$cu_n" ok "${PROGRESS_NOTE:-updated}"
                 else
                     FAILED=1
@@ -2109,8 +2833,8 @@ self_update() {
     mkdir -p "$CACHE_DIR"
     su_new="$CACHE_DIR/tlstore.new"
     su_sig="$CACHE_DIR/tlstore.new.minisig"
-    if ! curl -fsL -o "$su_new" "$RAW_BASE/$STORE_PATH/tlstore" 2>/dev/null ||
-       ! curl -fsL -o "$su_sig" "$RAW_BASE/$STORE_PATH/tlstore.minisig" 2>/dev/null; then
+    if ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_new" "$RAW_BASE/$STORE_PATH/tlstore" 2>/dev/null ||
+       ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_sig" "$RAW_BASE/$STORE_PATH/tlstore.minisig" 2>/dev/null; then
         rm -f "$su_new" "$su_sig"
         return 0
     fi
@@ -2258,6 +2982,8 @@ main() {
         picture) cmd_picture "$@" ;;
         readme) cmd_readme "$@" ;;
         readme-asset) cmd_readme_asset "$@" ;;
+        snapshot) cmd_snapshot "$@" ;;
+        prefetch) cmd_prefetch "$@" ;;
         install|add) cmd_install "$@" ;;
         remove|uninstall) cmd_remove "$@" ;;
         update|upgrade) cmd_update "$@" ;;
