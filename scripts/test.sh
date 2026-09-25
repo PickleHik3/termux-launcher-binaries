@@ -253,6 +253,16 @@ exit 0
 EOF
     chmod +x "$FIXBIN/fish"
 
+    # curl itself, counted: every call is written to curl.log before the real
+    # curl runs it, so a test can prove a prefetch fetched nothing.
+    REAL_CURL="$(command -v curl)"
+    cat > "$FIXBIN/curl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$ROOT/curl.log"
+exec "$REAL_CURL" "\$@"
+EOF
+    chmod +x "$FIXBIN/curl"
+
     # A fake npm registry: two package documents and their tarballs.
     mkdir -p "$FX/registry/demo-cli" "$FX/pkgsrc/package"
     cat > "$FX/pkgsrc/package/claude" <<'EOF'
@@ -980,7 +990,8 @@ y
     tl_stdout readme pinned
     expect_status "a second call is served from the cache, offline" 0
     expect_out "with the same path" "^$RM_CACHE/pinned-1.0.0+abc1234.5.md\$"
-    # A day-old copy is refreshed — and kept when the refresh cannot happen.
+    # A day-old copy still answers, offline or not: the open path never waits on
+    # GitHub. The prefetch is what looks upstream again, once a day.
     touch -t 200001010000 "$RM_CACHE/pinned-1.0.0+abc1234.5.md"
     tl_stdout readme pinned
     expect_status "a stale copy still answers when GitHub cannot be reached" 0
@@ -988,9 +999,16 @@ y
     mv "$FX/gh.away" "$FX/gh"
     printf '# pinned\n\nread again at abc1234\n' > "$RAWGH/demo/pinned/abc1234/README.md"
     tl_stdout readme pinned
-    expect_status "a stale copy is fetched again once GitHub is back" 0
-    expect_content "and the new README replaces it" "$OUT" $'# pinned\n\nread again at abc1234'
-    if [ -z "$(find "$RM_CACHE/pinned-1.0.0+abc1234.5.md" -mtime +0)" ]; then pass; else fail "the refreshed copy counts as fresh again"; fi
+    expect_status "with GitHub back, readme still answers from the copy it has" 0
+    expect_content "unchanged: the open path never fetches what it has" "$OUT" $'# pinned\n\nread at abc1234'
+    tl_stdout prefetch
+    expect_status "prefetch revalidates a day-old copy" 0
+    expect_content "and the newer README replaces it" "$RM_CACHE/pinned-1.0.0+abc1234.5.md" $'# pinned\n\nread again at abc1234'
+    if [ -z "$(find "$RM_CACHE/pinned-1.0.0+abc1234.5.md" -mtime +0)" ]; then pass; else fail "the refreshed copy counts as checked again"; fi
+    touch -t 200001010000 "$RM_CACHE/pinned-1.0.0+abc1234.5.md"
+    tl_stdout prefetch
+    if [ -z "$(find "$RM_CACHE/pinned-1.0.0+abc1234.5.md" -mtime +0)" ]; then pass; else fail "a copy checked again is marked so, newer or not"; fi
+    expect_content "and keeps what it had" "$RM_CACHE/pinned-1.0.0+abc1234.5.md" $'# pinned\n\nread again at abc1234'
 
     tl readme kit
     expect_status "an item with no upstream exits 2" 2
@@ -1014,7 +1032,7 @@ y
     # --- tlstore readme-asset: a README's pictures, from GitHub only ---
     tl_stdout readme-asset tagged docs/shot.png
     expect_status "a relative picture resolves against the README's revision" 0
-    expect_out "into the item's own cache directory" "^$RM_CACHE/tagged/[0-9a-f]*\.png\$"
+    expect_out "into the item's own cache directory, under the README's revision" "^$RM_CACHE/tagged/v2.3.4/[0-9a-f]*\.png\$"
     expect_content "and is the tag's copy of it" "$OUT" "the tagged shot"
     tl_stdout readme-asset readmepinned docs/shot.png
     expect_status "a relative picture in a pinned readme resolves against the commit it names" 0
@@ -1051,7 +1069,7 @@ y
     tl readme-asset tagged big.png
     expect_status "a picture over 5 MB exits 1" 1
     expect_out "and says it could not be fetched" "could not fetch big.png"
-    if ls "$RM_CACHE/tagged/".*.part "$RM_CACHE/tagged/".*.new >/dev/null 2>&1; then fail "no half-written picture is left behind"; else pass; fi
+    if ls "$RM_CACHE/tagged/"*/.*.part "$RM_CACHE/tagged/"*/.*.new >/dev/null 2>&1; then fail "no half-written picture is left behind"; else pass; fi
 
     tl readme-asset tagged docs/missing.png
     expect_status "a relative picture that is not there exits 1" 1
@@ -1060,7 +1078,8 @@ y
     tl readme-asset tagged
     expect_status "readme-asset needs a name and an address" 2
 
-    # Cached pictures are served offline and refreshed when a day old.
+    # Cached pictures are served offline and never fetched again on the open
+    # path; the prefetch revalidates a README's header picture once a day.
     mv "$FX/gh" "$FX/gh.away"
     tl_stdout readme-asset tagged https://github.com/demo/tagged/raw/HEAD/x.png
     expect_status "a cached picture is served offline" 0
@@ -1071,8 +1090,15 @@ y
     mv "$FX/gh.away" "$FX/gh"
     printf 'a newer github.com raw picture\n' > "$GH/github.com/demo/tagged/raw/HEAD/x.png"
     tl_stdout readme-asset tagged https://github.com/demo/tagged/raw/HEAD/x.png
-    expect_status "and is fetched again once GitHub is back" 0
-    expect_content "with the new picture in place" "$RA_ABS" "a newer github.com raw picture"
+    expect_status "with GitHub back, the open path still answers from the copy" 0
+    expect_content "unchanged" "$RA_ABS" "a github.com raw picture"
+    RA_SHOT="$RM_CACHE/tagged/v2.3.4/$(printf '%s' "https://raw.githubusercontent.com/demo/tagged/v2.3.4/docs/shot.png" | sha256sum | cut -d' ' -f1).png"
+    expect_file "the README's header picture is cached under the README's revision" "$RA_SHOT"
+    touch -t 200001010000 "$RA_SHOT"
+    printf 'the tagged shot, retaken\n' > "$RAWGH/demo/tagged/v2.3.4/docs/shot.png"
+    tl_stdout prefetch
+    expect_content "prefetch brings the newer header picture" "$RA_SHOT" "the tagged shot, retaken"
+    if [ -z "$(find "$RA_SHOT" -mtime +0)" ]; then pass; else fail "and marks it checked"; fi
 
     # A newer list, put in place without a refresh, so there is something to
     # report as out of date.
@@ -1106,6 +1132,125 @@ y
     tl update --check --tsv
     expect_no_out "an unreachable registry names nothing" $'^claude-code\t'
     mv "$FX/registry-gone" "$FX/registry"
+
+    # --- tlstore snapshot: the whole store in one run, kept while nothing moves ---
+    T=$'\t'
+    SNAP_FILE="$TESTHOME/.cache/tlstore/snapshot.tsv"
+    write_catalog "$TESTHOME/.local/share/tlstore/catalog.tsv" 2026090610 3 fakebin-3
+    rm -f "$SNAP_FILE"
+    tl_stdout snapshot --tsv
+    expect_status "snapshot --tsv" 0
+    SNAP="$OUT"
+    expect_out "it starts with the key of what it read" "^# tlstore snapshot${T}key=.*serial=2026090610"
+    for sn in hello claude-code pictured readmepinned privbin kit plug fakebin; do
+        tl_stdout info --tsv "$sn"
+        got="$(printf '%s\n' "$SNAP" | grep "^field${T}${sn}${T}" | cut -f3-)"
+        if [ "$got" = "$OUT" ]; then pass; else fail "snapshot's field lines for $sn are info --tsv's rows" "$(printf '%s' "$got" | head -3 | tr '\n' '|')"; fi
+    done
+    tl_stdout list --tsv
+    got="$(printf '%s\n' "$SNAP" | grep "^item${T}" | cut -f2-)"
+    if [ "$got" = "$OUT" ]; then pass; else fail "snapshot's item lines are list --tsv's rows"; fi
+    tl_stdout update --check --tsv --offline
+    got="$(printf '%s\n' "$SNAP" | grep "^update${T}" | cut -f2- | sort)"
+    if [ "$got" = "$(printf '%s\n' "$OUT" | sort)" ]; then pass; else fail "snapshot's update lines are update --check --tsv --offline's rows" "$got"; fi
+    OUT="$SNAP"
+    expect_out "a cached picture is named with its path" "^cached${T}pictured${T}picture${T}$PIC_CACHE\$"
+    expect_out "a cached demo too" "^cached${T}pictured${T}demo${T}$DEMO_CACHE\$"
+    expect_out "a cached pinned readme" "^cached${T}readmepinned${T}readme${T}$READMEPIN_CACHE\$"
+    expect_out "a cached upstream readme" "^cached${T}tagged${T}readme${T}$RM_CACHE/tagged-2.3.4.md\$"
+    expect_no_out "a picture that was never fetched is not" "^cached${T}hello${T}"
+    expect_no_out "nor one whose digest did not match" "^cached${T}badpic${T}"
+    expect_no_out "nothing hidden is listed" "^item${T}secret${T}"
+    expect_no_out "and no README picture: the UI learns those from the prefetch" "${T}asset${T}"
+    expect_file "the answer is kept" "$SNAP_FILE"
+    printf 'nudged\n' >> "$SNAP_FILE"
+    tl_stdout snapshot --tsv
+    expect_out "and served again as it is while nothing it reads has moved" "^nudged\$"
+    touch -t 202001010000 "$TESTHOME/.local/share/tlstore/installed.tsv"
+    tl_stdout snapshot --tsv
+    expect_no_out "a change to the installed list makes a new one" "^nudged\$"
+    expect_out "with the same content" "^item${T}hello${T}installed${T}"
+    tl snapshot
+    expect_status "snapshot without --tsv is refused" 2
+    write_catalog "$TESTHOME/.local/share/tlstore/catalog.tsv" 2026090603 2 fakebin-2
+
+    # --- tlstore prefetch: every asset, one line each, and nothing fetched twice ---
+    rm -rf "$TESTHOME/.cache/tlstore/pictures" "$TESTHOME/.cache/tlstore/readme"
+    : > "$ROOT/curl.log"
+    tl_stdout prefetch
+    expect_status "prefetch exits 0 once every item has been seen" 0
+    expect_out "a picture lands with its path" "^ready${T}pictured${T}picture${T}$PIC_CACHE\$"
+    expect_out "a demo too" "^ready${T}pictured${T}demo${T}$DEMO_CACHE\$"
+    expect_out "a pinned readme" "^ready${T}readmepinned${T}readme${T}$READMEPIN_CACHE\$"
+    expect_out "an upstream readme" "^ready${T}tagged${T}readme${T}$RM_CACHE/tagged-2.3.4.md\$"
+    expect_out "and the README's header picture, with the address it was written as" "^ready${T}tagged${T}asset${T}$RM_CACHE/tagged/v2.3.4/[0-9a-f]*\.png${T}docs/shot.png\$"
+    expect_out "a picture whose digest does not match is refused" "^failed${T}badpic${T}picture${T}"
+    expect_no_file "and nothing is kept for it" "$TESTHOME/.cache/tlstore/pictures/0000000000000000000000000000000000000000000000000000000000000000.jpg"
+    expect_out "a demo whose digest does not match is refused" "^failed${T}baddemo${T}demo${T}"
+    expect_out "a pinned readme whose digest does not match is refused" "^failed${T}readmepinnedbad${T}readme${T}"
+    expect_out "a picture that cannot be fetched fails" "^failed${T}hello${T}picture${T}"
+    expect_out "a readme that cannot be fetched, with no copy kept, fails" "^failed${T}nowhere${T}readme${T}"
+    expect_no_out "an item with nothing to fetch says nothing" "${T}twin${T}"
+    expect_no_out "an item with no upstream says nothing about a readme" "${T}kit${T}readme"
+    expect_no_out "nothing but ready and failed lines" "^[^rf]"
+    if [ -s "$ROOT/curl.log" ]; then pass; else fail "the first prefetch downloads"; fi
+    : > "$ROOT/curl.log"
+    tl_stdout prefetch
+    expect_status "a second prefetch" 0
+    expect_out "answers from the cache" "^ready${T}pictured${T}picture${T}$PIC_CACHE\$"
+    expect_out "the readme too" "^ready${T}tagged${T}readme${T}"
+    expect_out "and the readme's picture" "^ready${T}tagged${T}asset${T}"
+    # badpic, baddemo and readmepinnedbad share their sources with the good
+    # items, so it is the destinations (digest-named) that must not appear.
+    if grep -q "$PIC_DIGEST\|$DEMO_DIGEST\|$READMEPIN_DIGEST\|demo/tagged\|demo/pinned\|demo/untagged\|demo/rolling" "$ROOT/curl.log"; then
+        fail "and fetches nothing that is cached and verified" "$(head -3 "$ROOT/curl.log" | tr '\n' '|')"
+    else
+        pass
+    fi
+    # The catalog moves one picture's digest: that picture alone is fetched
+    # again, and the copy the old digest named goes.
+    printf 'a picture worth caching, retaken\n' > "$FX/pictured.jpg"
+    write_catalog "$TESTHOME/.local/share/tlstore/catalog.tsv" 2026090611 2 fakebin-2
+    NEW_PIC_CACHE="$TESTHOME/.cache/tlstore/pictures/$(sha "$FX/pictured.jpg").jpg"
+    : > "$ROOT/curl.log"
+    tl_stdout prefetch
+    expect_out "the moved picture lands under its new digest" "^ready${T}pictured${T}picture${T}$NEW_PIC_CACHE\$"
+    expect_content "and it is the new picture" "$NEW_PIC_CACHE" "a picture worth caching, retaken"
+    expect_no_file "the copy the old digest named is gone" "$PIC_CACHE"
+    expect_file "the demo, unchanged, stays" "$DEMO_CACHE"
+    if [ "$(grep -c "$(sha "$FX/pictured.jpg")" "$ROOT/curl.log")" = 1 ]; then pass; else fail "exactly one download, of the moved picture" "$(tr '\n' '|' < "$ROOT/curl.log")"; fi
+    if grep -q "$PIC_DIGEST\|$DEMO_DIGEST\|$READMEPIN_DIGEST\|demo/tagged\|demo/pinned" "$ROOT/curl.log"; then fail "nothing else is fetched again"; else pass; fi
+    printf 'a picture worth caching\n' > "$FX/pictured.jpg"
+    write_catalog "$TESTHOME/.local/share/tlstore/catalog.tsv" 2026090612 2 fakebin-2
+    # Copies no item names at all go too.
+    printf 'stray\n' > "$TESTHOME/.cache/tlstore/pictures/feedfacefeedface.jpg"
+    mkdir -p "$TESTHOME/.cache/tlstore/readme/gone-item/HEAD"
+    printf 'stray\n' > "$TESTHOME/.cache/tlstore/readme/gone-item/HEAD/x.png"
+    printf 'stray\n' > "$TESTHOME/.cache/tlstore/readme/gone-item-1.md"
+    printf 'stray\n' > "$TESTHOME/.cache/tlstore/readme/tagged/flat.png"
+    tl_stdout prefetch
+    expect_no_file "a picture no item names is removed" "$TESTHOME/.cache/tlstore/pictures/feedfacefeedface.jpg"
+    expect_no_file "a gone item's readme pictures are removed" "$TESTHOME/.cache/tlstore/readme/gone-item"
+    expect_no_file "and its readme" "$TESTHOME/.cache/tlstore/readme/gone-item-1.md"
+    expect_no_file "a picture from before revisions had directories is removed" "$TESTHOME/.cache/tlstore/readme/tagged/flat.png"
+    expect_file "a kept item's readme pictures stay" "$RM_CACHE/tagged/v2.3.4"
+    expect_file "the pinned readme stays" "$READMEPIN_CACHE"
+    expect_file "and the picture is back under its digest" "$PIC_CACHE"
+    expect_no_file "with the retaken copy gone" "$NEW_PIC_CACHE"
+    # Every fetch in the script gives up on a dead connection.
+    if grep -n 'curl -f' "$TLSTORE" | grep -v -- '--connect-timeout 5' | grep -q .; then
+        fail "every curl call names a connect timeout" "$(grep -n 'curl -f' "$TLSTORE" | grep -v -- '--connect-timeout 5' | head -2 | tr '\n' '|')"
+    else
+        pass
+    fi
+    if grep -n 'curl -f' "$TLSTORE" | grep -v -- '--max-time\|--speed-time' | grep -q .; then
+        fail "and a cap on the whole transfer, or on a stall"
+    else
+        pass
+    fi
+    tl prefetch extra
+    expect_status "prefetch takes no arguments" 2
+    write_catalog "$TESTHOME/.local/share/tlstore/catalog.tsv" 2026090603 2 fakebin-2
 
     # --- keeping tlstore itself current, when it was installed by hand ---
     if [ "$HAVE_MINISIGN" = 1 ]; then

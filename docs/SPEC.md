@@ -364,3 +364,92 @@ forwards `SIGWINCH` as `TIOCSWINSZ`, and after `exit <code>` exits with that cod
 socket ends the child. The first such item is `btop` (`recipes/cross/build-btop.sh`, four patches:
 `/proc/net/dev` when sysfs counters are refused, no kill/terminate/signal/renice, Android mounts,
 Bionic threads). `TLSTORE_VERSION` moves to 0.5.
+
+## Revision 7 — one snapshot, one prefetch, a cache that lasts (tlstore 0.5)
+
+The store felt slow on the phone: every screen ran the script several times (`list`, `update
+--check`, an `info` per item, a `picture`/`readme`/`readme-asset` per asset), each a full start
+with dozens of forks, and the UI decoded pictures and pushed uploads on its drawing thread. Two
+subcommands replace the per-item traffic, and the cache stops forgetting.
+
+### `tlstore snapshot --tsv`
+
+Everything tlstore-ui's screens need, in one run and one awk pass over the active catalog and
+`installed.tsv` (`load_item` no longer forks per field either). Line-typed, tab-separated, `#`
+comment lines skipped; each type carries the columns of the command it stands in for:
+
+```
+# tlstore snapshot	key=<key>
+item    name  state  version  installed  kind  summary  category  featured      (= list --tsv)
+field   name  key  value                                                        (= info --tsv <name>, same keys, same order)
+update  name  installed  available  note                                        (= update --check --tsv --offline)
+cached  name  picture|demo|readme  path                                         (a verified copy already on disk)
+```
+
+`item` and `field` lines cover the visible items; `update` lines every installed row, hidden or
+not, as `update --check` does. A README's pictures never appear as `cached`: the UI learns those
+from the prefetch. The answer is written to `$CACHE_DIR/snapshot.tsv` with its key on the first
+line and served from there while the key holds. The key names everything the answer depends on:
+tlstore's version, the catalog (path, serial, mtime, size), `installed.tsv` (mtime, size), the
+cache stamp `$CACHE_DIR/.changed` (mtime, size), and what `rows()` filters on (host, processor,
+app package, launcher version, `$HOME`, `$PREFIX`). A relaunch with nothing changed reads one
+small file. `list`, `info`, `update --check` keep working for other callers.
+
+### `tlstore prefetch`
+
+Fetches every picture, demo, readme and readme header picture that is missing, for every visible
+item — the featured items first, then in list order, three items at a time — and prints one line
+per asset as it lands, flushed per line:
+
+```
+ready   name  picture|demo|readme  path
+ready   name  asset                path  src        (the README's first image; src as written in it)
+failed  name  kind                 reason  [src]
+```
+
+Nothing is said about an asset the item does not have. What is cached and verified costs no
+network at all. Every curl the script runs now carries `--connect-timeout 5` and either
+`--max-time 60` (catalog, registry documents, readmes and pictures) or `--speed-limit 1
+--speed-time 30` (payloads, which may be large: they give up on a stall, not on a long
+transfer). Part files carry the pid, so a prefetch lane and an item opened early may fetch the
+same file at once and both verify their own copy.
+
+The UI starts the prefetch once the first snapshot is in (and again after a catalog refresh),
+reads its lines as they arrive and shows each asset as it lands; while it runs, the UI never asks
+for a picture, demo or readme on its own — they are all on their way — and asks for anything the
+prefetch did not answer once it ends. A README's other pictures are still fetched one by one as
+they scroll into view.
+
+### The asset cache
+
+Under `$CACHE_DIR` (`$HOME/.cache/tlstore`: the Termux home, inside the app's `files` directory,
+which Android does not clear — it is not the app's cache directory):
+
+| path | what | key | fetched again when |
+|---|---|---|---|
+| `pictures/<digest>.<ext>` | a picture or demo | its catalog digest (the sha256 of its URL for an old catalog's demo without one) | the catalog names a new digest for it |
+| `readme/pinned/<digest>.md` | a pinned readme | its catalog digest | the catalog names a new digest |
+| `readme/<name>-<version>.md`, `.ref` | an upstream readme and the revision it was read at | the item's version | the catalog moves the item to a new version; else revalidated by the prefetch at most once a day (`curl -z`), never on the open path |
+| `readme/<name>/<ref>/<urldigest>.<ext>` | a picture that readme refers to | its address, under the readme's revision (the pinned commit for a pinned readme) | the readme's revision changes; the header picture is revalidated with the readme |
+| `snapshot.tsv` | the last snapshot with its key | see above | its key no longer holds |
+| `.changed` | touched whenever anything above is fetched or removed | — | — |
+
+Rules: a digest-keyed copy is final for as long as the catalog names that digest, with no TTL; the
+open path (`picture`, `readme`, `readme-asset`) always serves a copy that is here, offline or not,
+and fetches only what is missing; only the prefetch looks upstream again, and only for
+version-keyed copies a day old. `prefetch` first throws away what the active catalog no longer
+names: pictures and pinned readmes under other digests, upstream readmes of other versions, the
+readme pictures of items or revisions that are gone (and any picture left from before pictures had
+revision directories). Dropping build tools no longer empties the cache: pictures, readmes and
+the snapshot stay.
+
+### tlstore-ui
+
+The UI never runs the script synchronously: the snapshot, the prefetch, every fetch, the refresh,
+gh, and now `launcherctl` too are tasks whose stdout the loop polls. Pictures are decoded, fitted
+and encoded for the terminal by a two-thread worker that wakes the loop through a pipe; READMEs
+are parsed there too. Frames of a clip are encoded by the frame thread. Uploads leave through a
+write queue the loop drains as the terminal accepts them, with `POLLOUT` in the poll set, so a
+clip streaming never blocks input. Up to three clips stay decoded, and up to three stay uploaded
+in the terminal after their placements go, so going back re-places a clip instead of sending it
+again. Nothing is asked for before an item has rested 150 ms under the cursor.

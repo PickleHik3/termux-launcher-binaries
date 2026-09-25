@@ -1,12 +1,45 @@
 #!/bin/sh
 # Stub tlstore for tlstore-ui tests: answers from the fixture files next to it and logs
-# every call to calls.log. Speaks the Revision 5 TSV contract and progress stream.
+# every call to calls.log. Speaks the Revision 5 TSV contract, the snapshot and prefetch
+# streams, and the progress stream.
 d=$(cd "$(dirname "$0")/.." && pwd)
 printf '%s\n' "$*" >> "$d/calls.log"
 TAB=$(printf '\t')
 cmd=$1; shift
 case "$cmd" in
     list) cat "$d/list.tsv"; exit 0 ;;
+    snapshot)
+        # list.tsv as `item` lines, each item's info/<name>.tsv as `field` lines,
+        # updates.tsv as `update` lines; nothing is ever reported cached.
+        [ "$1" = --tsv ] || exit 2
+        printf '# tlstore snapshot\tkey=fixture\n'
+        while IFS="$TAB" read -r n rest; do
+            [ -n "$n" ] || continue
+            printf 'item\t%s\t%s\n' "$n" "$rest"
+            [ -f "$d/info/$n.tsv" ] && sed "s/^/field${TAB}${n}${TAB}/" "$d/info/$n.tsv"
+        done < "$d/list.tsv"
+        sed "s/^/update${TAB}/" "$d/updates.tsv"
+        exit 0
+        ;;
+    prefetch)
+        # Nothing is prefetched unless a test asks for it (prefetch-lines): then every
+        # picture, demo and readme the fixtures hold is reported ready, the way the real
+        # engine answers from its cache.
+        [ -f "$d/prefetch-lines" ] || exit 0
+        while IFS="$TAB" read -r n rest; do
+            [ -n "$n" ] || continue
+            if [ -f "$d/pics/$n.png" ]; then
+                printf 'ready\t%s\tpicture\t%s\n' "$n" "$d/pics/$n.png"
+                printf 'ready\t%s\tdemo\t%s\n' "$n" "$d/pics/$n.png"
+            elif [ -f "$d/pics/$n.jpg" ]; then
+                printf 'ready\t%s\tpicture\t%s\n' "$n" "$d/pics/$n.jpg"
+            else
+                printf 'failed\t%s\tpicture\tnot fetched or not verified\n' "$n"
+            fi
+            [ -f "$d/readme/$n.md" ] && printf 'ready\t%s\treadme\t%s\n' "$n" "$d/readme/$n.md"
+        done < "$d/list.tsv"
+        exit 0
+        ;;
     update)
         case " $* " in
             *" --check "*) cat "$d/updates.tsv"; exit 0 ;;

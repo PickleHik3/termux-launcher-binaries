@@ -1,9 +1,10 @@
 //! The catalog as the script reports it (TSV contract, Revision 5, plus `Readme-skip`):
-//! `list --tsv`, `info --tsv <name>`, `update --check --tsv`, and the progress stream.
+//! `snapshot --tsv` (which carries the `list --tsv`, `info --tsv` and `update --check --tsv
+//! --offline` shapes, one line type each, plus the assets already cached), `update --check
+//! --tsv`, and the progress stream.
 
 use std::collections::HashMap;
-
-use super::proc::Env;
+use std::path::PathBuf;
 
 /// One visible item, from `tlstore list --tsv`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,24 +56,29 @@ impl Status {
     }
 }
 
+/// One `list --tsv` row (its fields, `name` first) as an item numbered `no`.
+fn item_from(f: &[&str], no: usize) -> Item {
+    let get = |k: usize| f.get(k).copied().unwrap_or("").to_string();
+    let dash = |s: String| if s == "-" { String::new() } else { s };
+    Item {
+        no,
+        name: get(0),
+        installed: (get(1) == "installed").then(|| get(3)),
+        version: dash(get(2)),
+        kind: get(4),
+        summary: dash(get(5)),
+        category: dash(get(6)),
+        featured: get(7) == "1",
+    }
+}
+
 pub fn parse_list(tsv: &str) -> Vec<Item> {
     tsv.lines()
         .filter(|l| !l.trim().is_empty())
         .enumerate()
         .map(|(i, l)| {
             let f: Vec<&str> = l.split('\t').collect();
-            let get = |k: usize| f.get(k).copied().unwrap_or("").to_string();
-            let dash = |s: String| if s == "-" { String::new() } else { s };
-            Item {
-                no: i + 1,
-                name: get(0),
-                installed: (get(1) == "installed").then(|| get(3)),
-                version: dash(get(2)),
-                kind: get(4),
-                summary: dash(get(5)),
-                category: dash(get(6)),
-                featured: get(7) == "1",
-            }
+            item_from(&f, i + 1)
         })
         .filter(|it| !it.name.is_empty())
         .collect()
@@ -108,6 +114,13 @@ impl Info {
                 .collect(),
         }
     }
+    fn push(&mut self, key: &str, value: &str) {
+        self.fields.push((key.to_string(), value.to_string()));
+    }
+    /// True when the script printed this key at all (even as `-`).
+    pub fn has(&self, key: &str) -> bool {
+        self.fields.iter().any(|(k, _)| k == key)
+    }
     /// The value for `key`, None when missing, empty or `-`.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.fields
@@ -139,7 +152,79 @@ impl Info {
     }
 }
 
-/// Everything the screens read, loaded through the script.
+/// What kind of asset a snapshot `cached` line or a prefetch line names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetKind {
+    Picture,
+    Demo,
+    Readme,
+    /// A picture the README refers to (its first image, for the header).
+    Asset,
+}
+
+impl AssetKind {
+    pub fn parse(word: &str) -> Option<AssetKind> {
+        Some(match word {
+            "picture" => AssetKind::Picture,
+            "demo" => AssetKind::Demo,
+            "readme" => AssetKind::Readme,
+            "asset" => AssetKind::Asset,
+            _ => return None,
+        })
+    }
+}
+
+/// Everything `tlstore snapshot --tsv` says, parsed: the list, every item's info, the
+/// offline updates, and the assets whose verified copy is already on disk.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub items: Vec<Item>,
+    pub infos: HashMap<String, Info>,
+    pub updates: Vec<Update>,
+    /// `(name, kind, path)`; only pictures, demos and readmes appear here.
+    pub cached: Vec<(String, AssetKind, PathBuf)>,
+}
+
+impl Snapshot {
+    /// Reads the line-typed stream. Comment lines (`#`) and unknown types are skipped; an
+    /// `item` line is the `list --tsv` row after the type word, a `field` line one
+    /// `info --tsv` row for its item, an `update` line one `update --check --tsv` row.
+    pub fn parse(text: &str) -> Snapshot {
+        let mut s = Snapshot::default();
+        for line in text.lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let f: Vec<&str> = line.split('\t').collect();
+            match f[0] {
+                "item" if f.len() >= 2 && !f[1].is_empty() => {
+                    let no = s.items.len() + 1;
+                    s.items.push(item_from(&f[1..], no));
+                }
+                "field" if f.len() >= 4 => {
+                    s.infos.entry(f[1].to_string()).or_default().push(f[2], f[3]);
+                }
+                "update" if f.len() >= 4 && !f[1].is_empty() => s.updates.push(Update {
+                    name: f[1].to_string(),
+                    have: f[2].to_string(),
+                    new: f[3].to_string(),
+                    note: f.get(4).copied().unwrap_or("").to_string(),
+                }),
+                "cached" if f.len() >= 4 => {
+                    if let Some(kind) = AssetKind::parse(f[2]).filter(|k| *k != AssetKind::Asset) {
+                        s.cached.push((f[1].to_string(), kind, PathBuf::from(f[3])));
+                    }
+                }
+                _ => {}
+            }
+        }
+        s
+    }
+}
+
+static NO_INFO: Info = Info { fields: Vec::new() };
+
+/// Everything the screens read, as the last snapshot said it.
 #[derive(Default)]
 pub struct Catalog {
     pub items: Vec<Item>,
@@ -147,31 +232,31 @@ pub struct Catalog {
     infos: HashMap<String, Info>,
     /// Set when the last load failed (no catalog yet, script missing).
     pub error: Option<String>,
+    /// True until the first snapshot has arrived (or failed).
+    pub loading: bool,
 }
 
 impl Catalog {
-    /// `list --tsv` plus the offline update check.
-    pub fn load(env: &Env) -> Catalog {
-        let mut c = Catalog::default();
-        c.reload(env);
-        c
+    /// An empty catalog waiting for its first snapshot.
+    pub fn loading() -> Catalog {
+        Catalog { loading: true, ..Catalog::default() }
     }
 
-    pub fn reload(&mut self, env: &Env) {
-        match env.script(&["list", "--tsv"]) {
-            Ok(out) => {
-                self.items = parse_list(&out);
-                self.error = None;
-            }
-            Err(_) => {
-                self.items.clear();
-                self.error = Some("The list could not be read. Check your connection and try again.".into());
-            }
-        }
-        if let Ok(out) = env.script(&["update", "--check", "--tsv", "--offline"]) {
-            self.updates = parse_updates(&out);
-        }
+    /// Takes a snapshot's list, info and updates.
+    pub fn apply(&mut self, s: Snapshot) {
+        self.items = s.items;
+        self.infos = s.infos;
+        self.updates = s.updates;
+        self.error = None;
+        self.loading = false;
+    }
+
+    /// The snapshot could not be read at all.
+    pub fn fail(&mut self) {
+        self.items.clear();
         self.infos.clear();
+        self.error = Some("The list could not be read. Check your connection and try again.".into());
+        self.loading = false;
     }
 
     pub fn item(&self, name: &str) -> Option<&Item> {
@@ -193,11 +278,9 @@ impl Catalog {
         }
     }
 
-    /// `info --tsv <name>`, cached until the next reload.
-    pub fn info(&mut self, env: &Env, name: &str) -> &Info {
-        self.infos.entry(name.to_string()).or_insert_with(|| {
-            env.script(&["info", "--tsv", name]).map(|o| Info::parse(&o)).unwrap_or_default()
-        })
+    /// The item's `info --tsv` rows as the snapshot carried them; empty for an unknown name.
+    pub fn info(&self, name: &str) -> &Info {
+        self.infos.get(name).unwrap_or(&NO_INFO)
     }
 }
 
@@ -267,6 +350,50 @@ mod tests {
         assert!(Info::parse("Readme-skip\t-\n").readme_skip().is_empty());
         let u = parse_updates("kitten\t0.48.2\t0.49\t\nclaude-code\t1.0\tlatest\tlatest\n");
         assert_eq!(u[1].new, "latest");
+    }
+
+    #[test]
+    fn snapshot_parses_every_line_type() {
+        let text = "# tlstore snapshot\tkey=abc\n\
+                    item\tdawn\tavailable\t0.1.3\t\tbinary\ta quiet place\tNote taking\t1\n\
+                    field\tdawn\tKind\tbinary\n\
+                    field\tdawn\tUpstream\tandrewmd5/dawn\n\
+                    field\tdawn\tSetup\t0\n\
+                    field\tdawn\tReadme-skip\tPortability\n\
+                    item\tkitten\tinstalled\t0.49\t0.48.2\tbinary\tpictures\tTools\t0\n\
+                    field\tkitten\tSetup\t0\n\
+                    update\tkitten\t0.48.2\t0.49\t\n\
+                    cached\tdawn\tpicture\t/c/pictures/aa.jpg\n\
+                    cached\tdawn\tasset\t/c/x.png\n\
+                    cached\tkitten\treadme\t/c/readme/kitten-0.49.md\n\
+                    something\telse\n";
+        let s = Snapshot::parse(text);
+        assert_eq!(s.items.len(), 2);
+        assert_eq!((s.items[0].no, s.items[1].no), (1, 2));
+        assert!(s.items[0].featured && s.items[0].installed.is_none());
+        assert_eq!(s.items[1].installed.as_deref(), Some("0.48.2"));
+        assert_eq!(s.infos["dawn"].upstream(), Some("andrewmd5/dawn"));
+        assert_eq!(s.infos["dawn"].readme_skip(), vec!["Portability"]);
+        assert!(s.infos["kitten"].upstream().is_none());
+        assert_eq!(s.updates.len(), 1);
+        assert_eq!(s.updates[0].new, "0.49");
+        assert_eq!(
+            s.cached,
+            vec![
+                ("dawn".to_string(), AssetKind::Picture, PathBuf::from("/c/pictures/aa.jpg")),
+                ("kitten".to_string(), AssetKind::Readme, PathBuf::from("/c/readme/kitten-0.49.md")),
+            ],
+            "a README's picture is never in a snapshot"
+        );
+        let mut c = Catalog::loading();
+        assert!(c.loading);
+        c.apply(s);
+        assert!(!c.loading && c.error.is_none());
+        assert_eq!(c.info("dawn").standfirst(), "");
+        assert!(c.info("dawn").has("Upstream") && !c.info("nobody").has("Kind"));
+        assert_eq!(c.status(&c.items[1].clone()), Status::Update("0.49".into()));
+        c.fail();
+        assert!(c.items.is_empty() && c.error.is_some());
     }
 
     #[test]

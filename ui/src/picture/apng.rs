@@ -10,13 +10,24 @@ use png::{BlendOp, DisposeOp};
 
 use super::file::{self, Fit};
 use super::shapes;
+use crate::render::escapes::FRAME_ZLIB_LEVEL;
 use crate::render::Rgb;
 
-/// One composed frame: how long it shows, and its pixels (straight RGBA, row-major).
+/// One composed frame: how long it shows, and its pixels (straight RGBA, row-major). A
+/// frame the worker has already encoded for the terminal carries the payload
+/// ([`crate::render::escapes::encode_payload`]) instead, with `rgba` empty: the pixels are
+/// never needed again, and the payload is a fraction of their size.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cel {
     pub gap_ms: u32,
     pub rgba: Vec<u8>,
+    pub encoded: Option<String>,
+}
+
+impl Cel {
+    pub fn new(gap_ms: u32, rgba: Vec<u8>) -> Cel {
+        Cel { gap_ms, rgba, encoded: None }
+    }
 }
 
 /// What a frame shows for until its `fcTL` says otherwise: one frame at 12 fps.
@@ -129,7 +140,7 @@ impl<'a> Apng<'a> {
         }
         let region = (fc.x_offset, fc.y_offset, fw, fh);
         compose(&mut self.canvas, self.width, &sub, region, fc.blend_op);
-        let cel = Cel { gap_ms: gap_ms(fc.delay_num, fc.delay_den), rgba: self.canvas.clone() };
+        let cel = Cel::new(gap_ms(fc.delay_num, fc.delay_den), self.canvas.clone());
         match dispose {
             DisposeOp::None => {}
             DisposeOp::Background => clear(&mut self.canvas, self.width, region),
@@ -225,8 +236,10 @@ pub fn thin(cels: Vec<Cel>, stride: usize) -> Vec<Cel> {
 
 /// The frame worker: composes every frame of the APNG in `bytes`, keeps every `stride`-th,
 /// fits each kept one into `box_w`×`box_h` (framed as a card when `card` names an edge colour, like the still)
-/// and sends it down `tx` — the still's own gap first, then the frames after it. Stops
-/// quietly when the receiver is gone.
+/// and sends it down `tx` — the still's own gap first, then the frames after it. With
+/// `encode`, each frame goes as the terminal payload (`Cel::encoded`, pixels dropped), so the
+/// UI thread only chunks it. Stops quietly when the receiver is gone.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     bytes: &[u8],
     box_w: u32,
@@ -234,6 +247,7 @@ pub fn stream(
     fit: Fit,
     card: Option<Rgb>,
     stride: usize,
+    encode: bool,
     tx: &Sender<Msg>,
 ) -> io::Result<()> {
     let Some(mut apng) = Apng::open(bytes)? else { return Ok(()) };
@@ -256,16 +270,19 @@ pub fn stream(
                 }
             }
             // The still's pixels are already on screen: only its gap is wanted.
-            let rgba = if i == 0 {
-                Vec::new()
-            } else {
+            let mut kept = Cel::new(cel.gap_ms, Vec::new());
+            if i > 0 {
                 let (w, h, mut rgba) = file::fit_into(sw, sh, &cel.rgba, box_w, box_h, fit);
                 if let Some(edge) = card {
                     shapes::card(w, h, &mut rgba, shapes::card_radius(w, h), edge);
                 }
-                rgba
-            };
-            pending = Some(Cel { gap_ms: cel.gap_ms, rgba });
+                if encode {
+                    kept.encoded = Some(crate::render::escapes::encode_payload(&rgba, FRAME_ZLIB_LEVEL));
+                } else {
+                    kept.rgba = rgba;
+                }
+            }
+            pending = Some(kept);
         } else if let Some(p) = pending.as_mut() {
             p.gap_ms += cel.gap_ms;
         }
@@ -387,7 +404,7 @@ pub(crate) mod tests {
 
     #[test]
     fn thinning_folds_the_dropped_gaps_into_the_kept_frames() {
-        let cels: Vec<Cel> = (0..5).map(|i| Cel { gap_ms: 10 * (i + 1), rgba: vec![i as u8] }).collect();
+        let cels: Vec<Cel> = (0..5).map(|i| Cel::new(10 * (i + 1), vec![i as u8])).collect();
         let kept = thin(cels, 2);
         assert_eq!(kept.iter().map(|c| c.rgba[0]).collect::<Vec<_>>(), vec![0, 2, 4]);
         assert_eq!(kept.iter().map(|c| c.gap_ms).collect::<Vec<_>>(), vec![30, 70, 50]);
@@ -397,7 +414,7 @@ pub(crate) mod tests {
     fn the_worker_sends_the_still_gap_then_the_kept_frames_fitted() {
         let bytes = tiny_apng();
         let (tx, rx) = std::sync::mpsc::channel();
-        stream(&bytes, 4, 4, Fit::Contain, None, 2, &tx).unwrap();
+        stream(&bytes, 4, 4, Fit::Contain, None, 2, false, &tx).unwrap();
         drop(tx);
         let msgs: Vec<Msg> = rx.iter().collect();
         assert_eq!(msgs.len(), 2);
@@ -408,11 +425,18 @@ pub(crate) mod tests {
         assert_eq!(px(&f.rgba, 2, 2), RED);
         // Without thinning, every frame after the still comes through, scaled into the box.
         let (tx, rx) = std::sync::mpsc::channel();
-        stream(&bytes, 2, 2, Fit::Contain, None, 1, &tx).unwrap();
+        stream(&bytes, 2, 2, Fit::Contain, None, 1, false, &tx).unwrap();
         drop(tx);
         let msgs: Vec<Msg> = rx.iter().collect();
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[0], Msg::StillGap(100));
         assert!(msgs[1..].iter().all(|m| matches!(m, Msg::Frame(f) if f.rgba.len() == 2 * 2 * 4)));
+        // Encoded for the terminal: the payload rides instead of the pixels.
+        let (tx, rx) = std::sync::mpsc::channel();
+        stream(&bytes, 2, 2, Fit::Contain, None, 1, true, &tx).unwrap();
+        drop(tx);
+        let msgs: Vec<Msg> = rx.iter().collect();
+        assert_eq!(msgs.len(), 4);
+        assert!(msgs[1..].iter().all(|m| matches!(m, Msg::Frame(f) if f.rgba.is_empty() && f.encoded.is_some())));
     }
 }

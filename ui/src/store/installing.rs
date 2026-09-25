@@ -60,7 +60,7 @@ impl View for Installing {
         let queued = job.queued();
         let summary = job.summary();
 
-        let info = st.cat.info(&st.env, &name).clone();
+        let info = st.cat.info(&name).clone();
         let setup = info.setup();
         let repo = info.upstream().map(str::to_string);
         // The header picture stays a still here: nothing plays while the script works.
@@ -189,7 +189,7 @@ impl View for Installing {
             }
             Event::Tap { action: A_CONTEXT, .. } => {
                 let name = st.job.as_ref().map(Job::shown_name).unwrap_or_default();
-                if let Some(rp) = st.cat.info(&st.env, &name).upstream().map(str::to_string) {
+                if let Some(rp) = st.cat.info(&name).upstream().map(str::to_string) {
                     st.open_repo(&rp);
                 }
                 Go::Stay

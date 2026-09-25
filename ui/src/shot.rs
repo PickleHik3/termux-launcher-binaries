@@ -204,7 +204,7 @@ impl Stage {
     /// (the README, then its first image, then the catalog picture), so this repeats until a
     /// frame asks for nothing (as tests/screens.rs settles). A fake job has nothing to read.
     fn settle(&mut self) {
-        for _ in 0..6 {
+        for _ in 0..16 {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
                 let fds = self.router.watch();
