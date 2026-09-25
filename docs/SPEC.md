@@ -45,9 +45,9 @@ Columns:
 | `prefixes` | `*` or comma list of app packages (`com.termux`, `io.vaj.tl`, `com.termux.launcher.nix`) |
 | `source` | `pkg`: space-separated package names. `binary`/`file`/`file-once`/`script`: a URL, or `binaries:<asset>@<tag>` (→ `https://raw.githubusercontent.com/PickleHik3/tlstore/<tag>/bin/<asset>`) or `launcher:<path>@<tag>` (→ `https://raw.githubusercontent.com/PickleHik3/termux-launcher/<tag>/<path>`). `npm-musl`: `npm:<package>#<executable inside package/>`. `bundle`: `-` |
 | `digest` | sha256 hex of the downloaded file; `-` for pkg, bundle, npm-musl (npm's registry sha512 is the check) |
-| `target` | install path with `~`; `-` = default (`~/.local/bin/<name>` for binary, `~/.local/lib/<name>` for npm-musl, none for others) |
+| `target` | install path with `~`; `-` = default (`~/.local/bin/<name>` for binary, `~/.local/lib/tlstore/priv/<name>` for a binary with `priv=shizuku`, `~/.local/lib/<name>` for npm-musl, none for others) |
 | `requires` | comma list of catalog names installed first; bundle members live here |
-| `options` | `;`-separated `key=value`: `env=K=V` (wrapper exports, repeatable with `,`), `tz=1` (wrapper exports TZ from `persist.sys.timezone`), `mode=755`, `post=<catalog script name>` |
+| `options` | `;`-separated `key=value`: `env=K=V` (wrapper exports, repeatable with `,`), `tz=1` (wrapper exports TZ from `persist.sys.timezone`), `mode=755`, `post=<catalog script name>`, `priv=shizuku` (binary only; Revision 5 below) |
 | `summary` | one plain sentence, product copy |
 
 Rules: one row per (name, prefix set) — per-edition builds are separate rows with their own
@@ -339,3 +339,28 @@ not `~/.local/bin/bin/opencode`.
 The two libraries are GCC's, redistributed unchanged from Alpine's aarch64 packages by
 `recipes/fetch-musl-runtime.sh` in `PickleHik3/tlstore`, under the GPL with the GCC Runtime
 Library Exception.
+
+## Revision 5 — the privileged lane (tlstore 0.5)
+
+Some tools only make sense with the whole phone in view: btop wants every process, every mount,
+every interface. A Termux uid sees its own. Termux:Launcher, when Shizuku is running and has
+granted it, can start a program as the shell uid (2000) through a Shizuku `UserService`, and
+tlstore learns to install items that run that way.
+
+| addition | meaning |
+|---|---|
+| `priv=shizuku` | a `binary` option. The program lands at `~/.local/lib/tlstore/priv/<name>` (or the row's `target`), off PATH, and a wrapper at `~/.local/bin/<name>` — `#!$PREFIX/bin/sh`, the launcher marker, then `exec "~/.local/bin/tl-priv" run "<program>" "$@"` — is what the user runs. Both are recorded, both are removed, and `info` names both. `build-catalog.sh` refuses the option on any other kind |
+| `tl-priv` | a hidden `binary` item, `host=launcher`, that every `priv=shizuku` row requires: the client of the lane, plain C against Bionic, static, edition-agnostic (`recipes/cross/tl-priv/`) |
+
+How a run goes: the wrapper execs `tl-priv run <abs path> [args]`; tl-priv connects to the abstract
+unix socket `\0<package>.priv` (the package from `$TERMUX_APP__PACKAGE_NAME`, else `$PREFIX`, else
+`com.termux`), sends one tab-separated line `tlpriv1 run <path> <TERM> <rows> <cols> [args…]`, and
+gets back `ok <pid>` with the pty master over `SCM_RIGHTS`, or `err <message>` (tl-priv prints it
+and exits 126; 127 when nothing listens). The launcher's service copies the binary to
+`/data/local/tmp/tl/bin/`, allowlisting it by the catalog digest, and spawns it there as uid 2000
+with `HOME=/data/local/tmp/tl/home/<name>`, `LANG=C.UTF-8`, `PATH=/system/bin` — no prefix at all,
+which is why such a binary must be fully static. tl-priv puts the local tty in raw mode, relays it,
+forwards `SIGWINCH` as `TIOCSWINSZ`, and after `exit <code>` exits with that code; closing the
+socket ends the child. The first such item is `btop` (`recipes/cross/build-btop.sh`, four patches:
+`/proc/net/dev` when sysfs counters are refused, no kill/terminate/signal/renice, Android mounts,
+Bionic threads). `TLSTORE_VERSION` moves to 0.5.

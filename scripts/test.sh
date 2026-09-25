@@ -111,6 +111,11 @@ write_catalog() {
         printf 'twin\tbinary\t1\tio.vaj.tl\tfile://%s/other.bin\t%s\t~/.local/bin/twin\t-\t-\tThe other edition build.\t%s\n' "$FX" "$(sha "$FX/other.bin")" "$R5_NONE"
         printf 'twin\tbinary\t1\tcom.termux\tfile://%s/twin.bin\t%s\t~/.local/bin/twin\t-\t-\tThis edition build.\t%s\n' "$FX" "$(sha "$FX/twin.bin")" "$R5_NONE"
         printf 'ghost\tbinary\t1\tio.vaj.tl\tfile://%s/other.bin\t%s\t-\t-\t-\tOnly for another edition.\t%s\n' "$FX" "$(sha "$FX/other.bin")" "$R5_NONE"
+        # A priv=shizuku binary and the hidden tl-priv it requires. The fixture
+        # tl-priv only echoes what it was asked to run, so the wrapper's exec
+        # line is what gets exercised, not a launcher.
+        printf 'tl-priv\tbinary\t1\t*\tfile://%s/tl-priv.bin\t%s\t-\t-\thidden=1\tThe client that runs a privileged item through the launcher.\t%s\n' "$FX" "$(sha "$FX/tl-priv.bin")" "$R5_NONE"
+        printf 'privbin\tbinary\t1\t*\tfile://%s/fakebin-1\t%s\t-\ttl-priv\tpriv=shizuku\tRuns as the shell user through the lane.\t%s\n' "$FX" "$(sha "$FX/fakebin-1")" "$R5_NONE"
         printf 'demo-pkg\tpkg\t-\t*\tdemo-one demo-two\t-\t-\t-\t-\tTwo packages from the package manager.\t%s\n' "$R5_NONE"
         printf 'musl-loader\tbinary\t1\tcom.termux\tfile://%s/loader.bin\t%s\t~/.local/lib/musl/ld-musl-aarch64.so.1\t-\t-\tWhat tools from other systems need to start.\t%s\n' "$FX" "$(sha "$FX/loader.bin")" "$R5_NONE"
         printf 'claude-code\tnpm-musl\tlatest\t*\tnpm:demo-cli#claude\t-\t-\tmusl-loader,demo-pkg\tenv=DEMO_FLAG=1;tz=1;build=demo-build\tA tool that comes from npm.\t%s\n' "$R5_NONE"
@@ -192,6 +197,7 @@ build_fixture() {
     printf '#!/bin/sh\necho twin here\n' > "$FX/twin.bin"
     printf '#!/bin/sh\necho other edition\n' > "$FX/other.bin"
     printf 'not really a loader\n' > "$FX/loader.bin"
+    printf '#!/bin/sh\necho "tl-priv $*"\n' > "$FX/tl-priv.bin"
     printf 'a picture worth caching\n' > "$FX/pictured.jpg"
     printf 'a demo worth caching\n' > "$FX/pictured-demo.jpg"
     printf '<!-- tlstore: pinned from demo/pinnedsrc@abcdef1 -->\n# pinned\n\nread from the pinned copy, never from upstream\n' > "$FX/pinned-hero.md"
@@ -614,6 +620,25 @@ run_suite() {
     tl install badsum -y
     expect_status "a payload that does not match its checksum fails" 1
     expect_no_file "nothing is left behind after a checksum failure" "$TESTHOME/.local/bin/badsum"
+
+    # --- a privileged binary: the program off PATH, a wrapper on it ---
+    tl install privbin -y
+    expect_status "install a priv=shizuku binary" 0
+    expect_file "the program lands off PATH" "$TESTHOME/.local/lib/tlstore/priv/privbin"
+    expect_file "the wrapper lands on PATH" "$TESTHOME/.local/bin/privbin"
+    expect_file "tl-priv comes in with it" "$TESTHOME/.local/bin/tl-priv"
+    expect_content "the wrapper hands the program to tl-priv" "$TESTHOME/.local/bin/privbin" "#!$TPREFIX/bin/sh
+# written by termux-launcher
+exec \"$TESTHOME/.local/bin/tl-priv\" run \"$TESTHOME/.local/lib/tlstore/priv/privbin\" \"\$@\""
+    OUT="$("$TESTHOME/.local/bin/privbin" --flag 2>&1)"; ST=$?
+    expect_status "the wrapper runs" 0
+    expect_out "the wrapper runs the program through tl-priv, arguments and all" "^tl-priv run $TESTHOME/.local/lib/tlstore/priv/privbin --flag$"
+    tl info privbin --tsv
+    expect_out "info names both files" $'^Files\t'"$TESTHOME/.local/lib/tlstore/priv/privbin $TESTHOME/.local/bin/privbin"'$'
+    tl remove privbin -y
+    expect_status "remove a priv=shizuku binary" 0
+    expect_no_file "the program is gone" "$TESTHOME/.local/lib/tlstore/priv/privbin"
+    expect_no_file "the wrapper is gone too" "$TESTHOME/.local/bin/privbin"
 
     # --- a bundle, with a package item in it ---
     tl install kit -y

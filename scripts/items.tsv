@@ -22,7 +22,12 @@
 #           musl-libs=<hidden binary items copied in beside the musl loader,
 #           for an npm-musl binary that needs more of musl than its libc>,
 #           host=launcher|termux (comma list; absent means both),
-#           min-launcher=X.Y.Z (the oldest launcher that may have it)
+#           min-launcher=X.Y.Z (the oldest launcher that may have it),
+#           priv=shizuku (binary only: the launcher runs it as the Shizuku
+#           shell user through its privileged lane. The program lands off PATH
+#           under ~/.local/lib/tlstore/priv/<name> and a wrapper at
+#           ~/.local/bin/<name> hands it to tl-priv, so the row requires
+#           tl-priv and is host=launcher; docs/maintainer/catalog.md)
 # summary   one plain sentence — it is what list and search show the user
 #
 # tlstore-ui (Revision 5) reads the rest through `tlstore info --tsv`/`list
@@ -50,13 +55,22 @@
 #               digest for `readme` and for `demo`) alongside it the same way
 #               it already computes picture-digest for `picture`.
 #
-# Seven items are visible, in the order they appear here: claude-code, dawn,
-# fastfetch, fish-shell, kitten, opencode, sigye. Everything else is hidden=1 —
-# a part another item pulls in, never listed and never installed by name.
+# Eight items are visible, in the order they appear here: btop, claude-code,
+# dawn, fastfetch, fish-shell, kitten, opencode, sigye. Everything else is
+# hidden=1 — a part another item pulls in, never listed and never installed by
+# name.
 #
 # fastfetch links libandroid-glob and dlopens ImageMagick and Chafa for the
 # animated logo, so its libraries are a pkg item it requires rather than a note
 # nobody reads.
+#
+# btop and tl-priv: TBD placeholders below. Replace the two `@TBD` tags with the
+# tag that publishes bin/btop-aarch64 and bin/tl-priv-aarch64 (built by
+# recipes/cross/build-btop.sh and build-tl-priv.sh, digests in that tag's
+# SHA256SUMS), and min-launcher=0.0.0 with the first launcher release that
+# carries the privileged lane. build-catalog.sh stops on the unknown tag until
+# then.
+btop	binary	1.4.7	*	binaries:btop@TBD	-	tl-priv	priv=shizuku;host=launcher;min-launcher=0.0.0	A resource monitor with the whole phone in view, run as the shell user through Shizuku.	Tools	aristocratos/btop	0	a resource monitor for the whole phone	Graphs cpu, memory, disks and network	Lists every process on the phone	Shows one process in close detail	btop	needs Shizuku running and permission granted to Termux:Launcher|processes can be viewed but not killed, and network stats come from /proc/net/dev	aristocratos	Apache-2.0	-	-	-	0	News|Themes|Support and funding|Prerequisites|Screenshots|Compilation Linux|Compilation macOS OSX|Compilation FreeBSD|Compilation OpenBSD|Compilation NetBSD|Installing the snap|GPU compatibility|Contributing and Testing|Star history	-
 claude-code	npm-musl	latest	com.termux,io.vaj.tl	npm:@anthropic-ai/claude-code-linux-arm64-musl#claude	-	musl-loader,claude-panes-skill	env=DISABLE_AUTOUPDATER=1;tz=1;build=patchelf	Anthropic's Claude Code, about 200 MB.	AI	anthropics/claude-code	0	a coding agent that lives in your terminal	Reads your codebase and explains it	Writes code from plain language requests	Handles git commits, branches and diffs	claude	about 200 mb|needs a claude.ai account to sign in	Anthropic	Proprietary	~200 MB	launcher:scripts/tlstore/pictures/claude-code.jpg@5253e29ae8e128aad09b08fd57eb115ba66140d8	binaries:hero/claude-code.png@2026.09.24	0	-	binaries:readme/claude-code.md@2026.09.24
 dawn	binary	0.1.3+0e958747.2	com.termux	binaries:dawn@2026.09.23	-	dawn-libs	-	A quiet place to write, with your markdown taking shape as you type.	Note taking	andrewmd5/dawn	0	a quiet place to write, headings and all	Shows headings and quotes as you type	Keeps your file plain markdown on disk	Displays a linked picture in place	dawn notes.md	looks best in this launcher's terminal	andrewmd5	MIT	-	launcher:scripts/tlstore/pictures/dawn.jpg@5253e29ae8e128aad09b08fd57eb115ba66140d8	binaries:hero/dawn.png@2026.09.24	1	Portability	binaries:readme/dawn.md@2026.09.24
 dawn	binary	0.1.3+0e958747.2	io.vaj.tl	binaries:dawn-io.vaj.tl@2026.09.23	-	dawn-libs	-	A quiet place to write, with your markdown taking shape as you type.	Note taking	andrewmd5/dawn	0	a quiet place to write, headings and all	Shows headings and quotes as you type	Keeps your file plain markdown on disk	Displays a linked picture in place	dawn notes.md	looks best in this launcher's terminal	andrewmd5	MIT	-	launcher:scripts/tlstore/pictures/dawn.jpg@5253e29ae8e128aad09b08fd57eb115ba66140d8	binaries:hero/dawn.png@2026.09.24	1	Portability	binaries:readme/dawn.md@2026.09.24
@@ -78,6 +92,7 @@ musl-libgcc	binary	14.2.0	*	binaries:musl-libgcc@2026.09.22-2	~/.local/lib/musl/
 musl-libstdcxx	binary	14.2.0	*	binaries:musl-libstdcxx@2026.09.22-2	~/.local/lib/musl/libstdc++.so.6	-	hidden=1	The C++ library some tools built for other Linux systems need.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-
 musl-loader	binary	1.2.5	com.termux	binaries:musl-loader@2026.09.06	~/.local/lib/musl/ld-musl-aarch64.so.1	-	hidden=1	What tools built for other Linux systems need to start here.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-
 musl-loader	binary	1.2.5	io.vaj.tl	binaries:musl-loader-io.vaj.tl@2026.09.06	~/.local/lib/musl/ld-musl-aarch64.so.1	-	hidden=1	What tools built for other Linux systems need to start here.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-
+tl-priv	binary	0.1.0	*	binaries:tl-priv@TBD	-	-	hidden=1;host=launcher	The client that runs a privileged item through the launcher.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-
 oh-my-posh	pkg	-	*	oh-my-posh	-	-	hidden=1	The prompt oh-my-posh draws.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-
 personal-fish	file-once	v0.2.39	*	launcher:docs/en/examples/conf.d-personal.fish@v0.2.39	~/.config/fish/conf.d/personal.fish	fish	hidden=1	A place for your own fish settings, left alone once it is there.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-
 zoxide	pkg	-	*	zoxide	-	-	hidden=1	Jump to the directories you use most by name.	-	-	0	-	-	-	-	-	-	-	-	-	-	-	0	-	-

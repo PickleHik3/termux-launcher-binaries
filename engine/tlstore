@@ -38,7 +38,7 @@
 
 set -u
 
-TLSTORE_VERSION=0.4
+TLSTORE_VERSION=0.5
 
 PREFIX="${TLSTORE_PREFIX:-${PREFIX:-${HOME%/files/home}/files/usr}}"
 HOME="${HOME:?tlstore needs HOME}"
@@ -54,6 +54,9 @@ esac
 
 BIN_DIR="$HOME/.local/bin"
 LIB_DIR="$HOME/.local/lib"
+# Where a priv=shizuku binary itself lives: off PATH, since what the user runs
+# is the wrapper in BIN_DIR that hands it to the launcher's privileged lane.
+PRIV_DIR="$LIB_DIR/tlstore/priv"
 DATA_DIR="$HOME/.local/share/tlstore"
 CACHE_DIR="$HOME/.cache/tlstore"
 STORE_DIR="$PREFIX/libexec/termux-launcher/tlstore"
@@ -402,15 +405,24 @@ source_url() {
     esac
 }
 
-# item_targets <name> <kind> <target> [source] — where an item's payload lands,
-# space separated; empty for pkg and bundles. An npm-musl item lands twice: the
-# directory, then the wrapper, which is named after the executable inside the
-# package (claude-code installs the command `claude`). A package that keeps its
-# executable in a subdirectory (npm:x#bin/y) still gets the bare name.
+# item_targets <name> <kind> <target> [source] [options] — where an item's
+# payload lands, space separated; empty for pkg and bundles. An npm-musl item
+# lands twice: the directory, then the wrapper, which is named after the
+# executable inside the package (claude-code installs the command `claude`). A
+# package that keeps its executable in a subdirectory (npm:x#bin/y) still gets
+# the bare name. A binary with priv=shizuku lands twice as well: the program
+# under PRIV_DIR, off PATH, then the wrapper on PATH that runs it through
+# tl-priv.
 item_targets() {
     case "$2" in
         binary|file|file-once)
-            if [ "$3" = "-" ] || [ -z "$3" ]; then
+            if [ "$2" = binary ] && [ "$(opt "${5:-}" priv)" = shizuku ]; then
+                if [ "$3" = "-" ] || [ -z "$3" ]; then
+                    printf '%s %s' "$PRIV_DIR/$1" "$BIN_DIR/$1"
+                else
+                    printf '%s %s' "$(expand_path "$3")" "$BIN_DIR/$1"
+                fi
+            elif [ "$3" = "-" ] || [ -z "$3" ]; then
                 [ "$2" = binary ] || return 0
                 printf '%s' "$BIN_DIR/$1"
             else
@@ -852,7 +864,8 @@ do_pkg() {
 }
 
 do_binary() {
-    db_dest=$(item_targets "$ii_name" binary "$ii_target")
+    db_targets=$(item_targets "$ii_name" binary "$ii_target" "$ii_source" "$ii_options")
+    db_dest="${db_targets%% *}"
     db_mode=$(opt "$ii_options" mode)
     [ -n "$db_mode" ] || db_mode=755
     say "installing $ii_name"
@@ -860,8 +873,26 @@ do_binary() {
     backup_existing "$db_dest"
     download "$(source_url "$ii_source")" "$db_dest" "$ii_digest" || return 1
     chmod "$db_mode" "$db_dest"
-    state_record "$ii_name" binary "$ii_version" "$db_dest"
-    say "  $db_dest"
+    if [ "$(opt "$ii_options" priv)" = shizuku ]; then
+        # The program stays off PATH. What the user runs is a wrapper that hands
+        # it to tl-priv, the client of the launcher's privileged lane, which
+        # starts it as the Shizuku shell user. tl-priv is a hidden binary item
+        # every such item requires, so it is in BIN_DIR by now.
+        db_wrapper="${db_targets#* }"
+        mkdir -p "$BIN_DIR"
+        backup_existing "$db_wrapper"
+        {
+            printf '#!%s/bin/sh\n' "$PREFIX"
+            printf '# written by termux-launcher\n'
+            printf 'exec "%s/tl-priv" run "%s" "$@"\n' "$BIN_DIR" "$db_dest"
+        } > "$db_wrapper"
+        chmod 755 "$db_wrapper"
+        state_record "$ii_name" binary "$ii_version" "$db_dest" "$db_wrapper"
+        say "  $db_wrapper"
+    else
+        state_record "$ii_name" binary "$ii_version" "$db_dest"
+        say "  $db_dest"
+    fi
     return 0
 }
 
@@ -1396,7 +1427,7 @@ cmd_info() {
     [ -n "$ci_want" ] || { err "info needs one name"; return 2; }
     need_catalog
     load_item "$ci_want" || { err "$ci_want is not in the list"; return 1; }
-    ci_files=$(item_targets "$it_name" "$it_kind" "$it_target" "$it_source")
+    ci_files=$(item_targets "$it_name" "$it_kind" "$it_target" "$it_source" "$it_options")
     ci_where="$ci_files"
     case "$it_kind" in
         pkg) ci_where="$it_source" ;;

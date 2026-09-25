@@ -21,10 +21,11 @@ which opens a picker over every item you do not have yet.
 
 ## What's in the store
 
-Seven items, and each one brings whatever it needs along with it.
+Eight items, and each one brings whatever it needs along with it.
 
 | item | what you get |
 | --- | --- |
+| `btop` | A resource monitor with the whole phone in view — every process, disk and network interface — run as the shell user through Shizuku. Launcher only. |
 | `claude-code` | [Claude Code](https://claude.com/claude-code), Anthropic's coding agent for the terminal. About 200 MB. |
 | `dawn` | A writing pad for the terminal: your markdown takes shape as you type, headings and all. |
 | `fastfetch` | System information beside an animated logo. It brings the layout; drop any GIF of yours at `~/Pictures/gif/skel.gif` and it plays there, otherwise you get text. |
@@ -172,6 +173,17 @@ is installed, pick a provider and sign in with:
 opencode
 ```
 
+## btop
+
+`tlstore install btop` installs [btop](https://github.com/aristocratos/btop), the resource monitor,
+in a form that sees the whole phone rather than just your own processes: the launcher runs it as
+Android's shell user through [Shizuku](https://shizuku.rikka.app), so Shizuku has to be running and
+Termux:Launcher granted in it, or `btop` says the lane isn't there and stops. What you get is every
+process, the real disks and the network graphs; what you cannot do from there is kill or renice a
+process (the shell user may look, not touch), so those keys are gone from btop's menus. Network
+counters come from `/proc/net/dev`, since Android keeps the usual `/sys` files from the shell user.
+It is a launcher item, not offered in plain Termux.
+
 ## Writing
 
 `tlstore install dawn` installs [dawn](https://github.com/andrewmd5/dawn), a writing pad that runs
@@ -222,8 +234,9 @@ and the phone gets a notice when it is done. Set `TLSTORE_MOTION=0` to turn the 
 ## Which app you are in
 
 The store runs in the launcher and in plain Termux, and a few items only make sense in one of
-them. `fastfetch` is a launcher item: its animated logo needs the launcher's terminal. Everything
-else — `claude-code`, `dawn`, `opencode`, `sigye`, `kitten`, `fish-shell` — is offered in both.
+them. `fastfetch` is a launcher item: its animated logo needs the launcher's terminal. So is
+`btop`: it runs through the launcher's Shizuku lane. Everything else — `claude-code`, `dawn`,
+`opencode`, `sigye`, `kitten`, `fish-shell` — is offered in both.
 
 An item that belongs to one of them is filtered out completely everywhere else: it is not listed,
 not found by a search, and `tlstore info` says it is not in the list. `tlstore doctor` prints an

@@ -151,6 +151,41 @@ does not render well as-is — heavy badges, a build matrix, prose written for a
   time changes, and rewrites the UI binary whenever the bundled bytes differ; a same-version debug
   reinstall therefore still picks the new binary up on the next launcher start.
 
+## Privileged items (priv=shizuku)
+
+Some tools need the whole phone in view — btop wants every process, every mount and every network
+interface, and a Termux uid only sees its own. A `binary` row with `priv=shizuku` in `options` is
+run by the launcher as the shell uid (2000) instead. End to end:
+
+1. **tlstore** downloads the binary to `~/.local/lib/tlstore/priv/<name>`, off PATH, and writes a
+   wrapper at `~/.local/bin/<name>` that runs `exec "~/.local/bin/tl-priv" run "<that path>" "$@"`.
+   Both files are recorded, `remove` deletes both, `info` names both. The row must `requires`
+   `tl-priv` and carry `host=launcher` (plain Termux has no lane) and a `min-launcher=` naming the
+   first launcher release that has one.
+2. **tl-priv** (`recipes/cross/tl-priv/tl-priv.c`, built by `build-tl-priv.sh`; a hidden `binary`
+   item) connects to the launcher's abstract unix socket `\0<package>.priv` and sends one line:
+   `tlpriv1 <TAB> run <TAB> <path> <TAB> <TERM> <TAB> <rows> <TAB> <cols> [<TAB> <arg>]…`. It gets back
+   `ok <pid>` with the pty master over `SCM_RIGHTS`, or `err <message>`, which it prints and exits
+   126 with (127 when nothing listens). Then it relays the pty to the terminal in raw mode, forwards
+   window-size changes, and exits with the code from the closing `exit <code>` line. Closing the
+   socket ends the child.
+3. **The launcher's service** (in `PickleHik3/termux-launcher`) copies the binary to
+   `/data/local/tmp/tl/bin/<name>` and, through its Shizuku `UserService`, spawns it there in a pty
+   as uid 2000 with `HOME=/data/local/tmp/tl/home/<name>`, `LANG=C.UTF-8` and `PATH=/system/bin`
+   — no Termux prefix exists on that side, which is why the binary must be fully static with no
+   prefix baked in (see `recipes/cross/README.md`). The launcher allowlists what it will run by the
+   catalog digest: the row's `digest` is the identity the service checks against, so a rebuilt
+   binary means a new tag, a new digest and a new catalog before it runs.
+
+To add another one: build it static and prefix-free with a `recipes/cross/build-<name>.sh` (the
+btop script is the model — Bionic's `libc.a` through the NDK's `-static`, and mind that Bionic has
+no `pthread_cancel`), publish it under a tag, add a `binary` row with `priv=shizuku`, `requires`
+`tl-priv`, `host=launcher` and `min-launcher=`, and note in the item's copy what the shell uid
+cannot do — signal other uids' processes, for one. Anything the tool reads from `/sys` that Android
+refuses the shell uid (btop's network counters, for instance) needs a `/proc` fallback patched in,
+not a note. The engine's tests cover the install/remove shape (`privbin` in `scripts/test.sh`);
+the lane itself is verified on a phone.
+
 ## Removing an item
 
 Delete its row (and its parts, if nothing else needs them), rebuild, test, release. Phones that

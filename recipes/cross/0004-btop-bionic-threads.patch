@@ -1,0 +1,51 @@
+--- a/src/btop.cpp
++++ b/src/btop.cpp
+@@ -208,6 +208,17 @@
+ 	Input::interrupt();
+ }
+ 
++#ifdef __ANDROID__
++//* Bionic has no pthread_timedjoin_np: join from a helper thread and give up on the helper when the
++//* time runs out. Only used on the way out, where an abandoned blocked thread costs nothing.
++static int timed_join(pthread_t thread, int timeout_ms) {
++	static std::atomic<bool> done{false};   //? static: the helper may outlive the call
++	std::thread([thread] { pthread_join(thread, nullptr); done.store(true); }).detach();
++	for (int waited = 0; waited < timeout_ms and not done.load(); waited += 10) sleep_ms(10);
++	return done.load() ? 0 : -1;
++}
++#endif
++
+ //* Exit handler; stops threads, restores terminal and saves config changes
+ void clean_quit(int sig) {
+ 	if (Global::quitting) return;
+@@ -219,6 +230,11 @@
+ 			Logger::warning("Failed to join _runner thread on exit!");
+ 			pthread_cancel(Runner::runner_id);
+ 		}
++	#elif defined __ANDROID__
++		//? Bionic has no pthread_cancel either: a runner that did not finish in time is left behind.
++		if (timed_join(Runner::runner_id, 5000) != 0) {
++			Logger::warning("Failed to join _runner thread on exit!");
++		}
+ 	#else
+ 		constexpr struct timespec ts { .tv_sec = 5, .tv_nsec = 0 };
+ 		if (pthread_timedjoin_np(Runner::runner_id, nullptr, &ts) != 0) {
+@@ -742,6 +758,10 @@
+ 			Logger::error("Stall in Runner thread, restarting!");
+ 			set_active(false);
+ 			// exit(1);
++		#ifdef __ANDROID__
++			//? Bionic cannot cancel a thread. The stalled runner is abandoned where it is — the
++			//? pthread_create below gives runner_id to its replacement and nothing joins the old one.
++		#else
+ 			pthread_cancel(Runner::runner_id);
+ 
+ 			// Wait for the thread to actually terminate before creating a new one
+@@ -750,6 +770,7 @@
+ 			if (join_result != 0) {
+ 				Logger::warning("Failed to join cancelled thread: {}", strerror(join_result));
+ 			}
++		#endif
+ 
+ 			if (pthread_create(&Runner::runner_id, nullptr, &Runner::_runner, nullptr) != 0) {
+ 				Global::exit_error_msg = "Failed to re-create _runner thread!";

@@ -1,0 +1,72 @@
+--- a/src/linux/btop_collect.cpp
++++ b/src/linux/btop_collect.cpp
+@@ -27,6 +27,7 @@
+ #include <numeric>
+ #include <optional>
+ #include <ranges>
++#include <sstream>
+ #include <string_view>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -2673,6 +2674,26 @@
+ 	bool rescale{true};
+ 	uint64_t timestamp{};
+ 
++	//* Read the received and transmitted byte counters of every interface from /proc/net/dev
++	//? The same counters as /sys/class/net/<iface>/statistics/{rx,tx}_bytes, for kernels or
++	//? security policies (Android's shell uid, for one) that refuse the sysfs files but not procfs.
++	static auto proc_net_dev() -> std::unordered_map<string, array<uint64_t, 2>> {
++		std::unordered_map<string, array<uint64_t, 2>> counters;
++		ifstream devread(Shared::procPath / "net/dev");
++		for (string line; getline(devread, line);) {
++			//? "  wlan0: <rx bytes> <packets> <errs> <drop> <fifo> <frame> <compressed> <multicast> <tx bytes> ..."
++			const auto colon = line.find(':');
++			if (colon == string::npos) continue;
++			string iface = line.substr(0, colon);
++			iface.erase(0, iface.find_first_not_of(' '));
++			std::istringstream fields(line.substr(colon + 1));
++			uint64_t rx{}, tx{}, skip{};
++			if (fields >> rx >> skip >> skip >> skip >> skip >> skip >> skip >> skip >> tx)
++				counters[iface] = {rx, tx};
++		}
++		return counters;
++	}
++
+ 	auto collect(bool no_update) -> net_info& {
+ 		if (Runner::stopping) return empty_net;
+ 		auto& net = current_net;
+@@ -2741,6 +2762,10 @@
+ 			}
+ 
+ 			//? Get total received and transmitted bytes + device address if no ip was found
++			//? The counters are read once from /proc/net/dev, lazily, for any interface whose
++			//? sysfs statistics file cannot be read.
++			std::unordered_map<string, array<uint64_t, 2>> dev_counters;
++			bool dev_counters_read = false;
+ 			for (const auto& iface : interfaces) {
+ 				auto& netif = net.at(iface);
+ 				if (netif.ipv4.empty() and netif.ipv6.empty())
+@@ -2752,9 +2777,20 @@
+ 					auto& bandwidth = netif.bandwidth.at(dir);
+ 
+ 					uint64_t val{};
+-					try { val = stoull(readfile(sys_file, "0")); }
+-					catch (const std::invalid_argument&) {}
+-					catch (const std::out_of_range&) {}
++					string val_str = readfile(sys_file);
++					if (val_str.empty()) {
++						if (not dev_counters_read) {
++							dev_counters = proc_net_dev();
++							dev_counters_read = true;
++						}
++						if (const auto found = dev_counters.find(iface); found != dev_counters.end())
++							val = found->second.at(dir == "download" ? 0 : 1);
++					}
++					else {
++						try { val = stoull(val_str); }
++						catch (const std::invalid_argument&) {}
++						catch (const std::out_of_range&) {}
++					}
+ 
+ 					//? Update speed, total and top values
+ 					if (val < saved_stat.last) {
