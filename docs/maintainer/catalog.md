@@ -114,6 +114,26 @@ launcher pins against. Signing needs the developer's passphrase, so this is two 
 
 `release.sh` never tags or pushes; that is the orchestrator's call once the lock block is in hand.
 
+### From GitHub, without a laptop
+
+`.github/workflows/release.yml` runs the same three passes on a runner, then commits `dist/` and
+`SHA256SUMS`, tags and pushes, and prints the lock block in the run summary. Start it from the
+Actions tab, the GitHub app, or `gh workflow run release.yml [-f tag=<tag>]`; with no tag it uses
+today's date, suffixed `-2`, `-3`… when that is taken. It runs `scripts/test.sh` first and rebuilds
+`tlstore-ui` only when `scripts/check-dist.sh` says `ui/` changed. Binaries, heroes and readmes are
+published as committed, so build and commit those before running it.
+
+It signs with two repository secrets, set once from the machine that holds the key:
+
+```sh
+gh secret set TLSTORE_SIGNING_KEY -R PickleHik3/tlstore < ~/.config/vaj-apt/tlstore-minisign.key
+gh secret set TLSTORE_SIGNING_KEY_PASSWORD -R PickleHik3/tlstore   # prompts for the password
+```
+
+`scripts/sign.sh` reads the password from `TLSTORE_SIGNING_KEY_PASSWORD` when it is set. With the
+key in the repository's secrets, anyone who can run workflows here can publish a catalog phones
+trust: keep write access to yourself.
+
 ## Pinning a readme or a hero picture
 
 Most items just fetch the upstream README (`readme` stays `-`). Pin one when the upstream page

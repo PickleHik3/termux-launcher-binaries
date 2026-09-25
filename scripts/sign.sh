@@ -9,7 +9,9 @@
 #
 # The signing key is the maintainer's and lives outside every checkout:
 # TLSTORE_SIGNING_KEY, default ~/.config/vaj-apt/tlstore-minisign.key. Do not
-# generate one here, and never commit a secret key.
+# generate one here, and never commit a secret key. minisign asks for the key's
+# password on the terminal; unattended (the release workflow), it is read from
+# TLSTORE_SIGNING_KEY_PASSWORD instead.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,10 +28,19 @@ command -v minisign >/dev/null 2>&1 || { echo "minisign is not installed" >&2; e
 serial="$(sed -n 's/^#.*serial=\([0-9][0-9]*\).*$/\1/p' "$catalog" | head -1)"
 version="$(sed -n 's/^TLSTORE_VERSION=//p' "$script" | head -1)"
 
-minisign -S -s "$key" -x "$catalog.minisig" -m "$catalog" \
+# minisign reads the password from stdin when stdin is not a terminal.
+sign() {
+    if [ -n "${TLSTORE_SIGNING_KEY_PASSWORD:-}" ]; then
+        printf '%s\n' "$TLSTORE_SIGNING_KEY_PASSWORD" | minisign -S -s "$key" "$@" >/dev/null
+    else
+        minisign -S -s "$key" "$@"
+    fi
+}
+
+sign -x "$catalog.minisig" -m "$catalog" \
     -c "tlstore catalog" -t "tlstore catalog serial=$serial"
 echo "signed $catalog.minisig (serial=$serial)"
 
-minisign -S -s "$key" -x "$script.minisig" -m "$script" \
+sign -x "$script.minisig" -m "$script" \
     -c "tlstore script" -t "tlstore $version"
 echo "signed $script.minisig (tlstore $version)"

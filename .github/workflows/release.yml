@@ -1,0 +1,112 @@
+# Cuts a signed tlstore release from GitHub, so publishing needs no laptop:
+# run it from the Actions tab (or `gh workflow run release.yml`), optionally
+# naming the tag. It does what docs/maintainer/catalog.md's "Cutting a release"
+# does by hand:
+#
+#   test → rebuild tlstore-ui if ui/ changed → release.sh --prepare → sign.sh
+#   → release.sh → commit dist/ and SHA256SUMS → tag → push
+#
+# and prints the lock block for the launcher's app/tlstore.lock in the run
+# summary. Binaries under bin/, hero/, readme/ are published as committed; build
+# those with recipes/ and commit them first.
+#
+# Secrets (Settings › Secrets and variables › Actions):
+#   TLSTORE_SIGNING_KEY           the minisign secret key file's contents
+#   TLSTORE_SIGNING_KEY_PASSWORD  its password
+# Anyone who can run this workflow can publish a catalog phones will trust, so
+# keep write access to this repository to yourself.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (empty: today's date, with -2, -3… if taken)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      NDK_VERSION: "29.0.14206865"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+
+      - name: Tag
+        id: tag
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            base=$(date -u +%Y.%m.%d)
+            tag=$base; n=2
+            while git rev-parse -q --verify "refs/tags/$tag" >/dev/null; do tag="$base-$n"; n=$((n + 1)); done
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::tag $tag already exists"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+      - name: Test
+        run: bash scripts/test.sh
+
+      - name: Rebuild tlstore-ui if ui/ changed
+        run: |
+          if scripts/check-dist.sh; then exit 0; fi
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          rustup target add aarch64-linux-android x86_64-linux-android
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION" scripts/build-ui.sh --install
+
+      - name: Prepare
+        run: scripts/release.sh "${{ steps.tag.outputs.tag }}" --prepare
+
+      - name: Sign
+        env:
+          KEY: ${{ secrets.TLSTORE_SIGNING_KEY }}
+          TLSTORE_SIGNING_KEY_PASSWORD: ${{ secrets.TLSTORE_SIGNING_KEY_PASSWORD }}
+        run: |
+          [ -n "$KEY" ] || { echo "::error::the TLSTORE_SIGNING_KEY secret is not set"; exit 1; }
+          umask 077
+          key="$RUNNER_TEMP/tlstore-minisign.key"
+          printf '%s\n' "$KEY" > "$key"
+          TLSTORE_SIGNING_KEY="$key" bash scripts/sign.sh
+          rm -f "$key"
+
+      - name: Finish
+        run: scripts/release.sh "${{ steps.tag.outputs.tag }}" | tee "$RUNNER_TEMP/release.out"
+
+      - name: Commit, tag, push
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          serial=$(sed -n 's/^#.*serial=\([0-9][0-9]*\).*$/\1/p' dist/catalog.tsv | head -1)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SHA256SUMS dist
+          git commit -m "Release $tag: signed catalog (serial $serial) and script, dist/ in SHA256SUMS"
+          git tag "$tag"
+          git push origin HEAD:main "refs/tags/$tag"
+
+      - name: Lock block
+        run: |
+          {
+            echo "### app/tlstore.lock"
+            echo '```'
+            sed -n '/^tag /,$p' "$RUNNER_TEMP/release.out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
