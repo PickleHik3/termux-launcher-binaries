@@ -176,6 +176,51 @@ die() { err "$*"; exit 1; }
 progress_line() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"; }
 progress_done() { printf 'done\t%s\t%s\t%s\n' "$1" "$2" "$3"; }
 
+# progress_stage <pct> <words> — the job's item reached a step. Only moves
+# forward, so a step the work already reported (the download's own count, or
+# its checksum) is not reported again, and one it never reached (a pkg item
+# has no download of ours) still shows before "ready".
+PROGRESS_AT=0
+progress_stage() {
+    [ "$PROGRESS" = 1 ] && [ -n "$CANCEL_ITEM" ] || return 0
+    [ "$1" -gt "$PROGRESS_AT" ] || return 0
+    PROGRESS_AT=$1
+    progress_line step "$CANCEL_ITEM" "$1" "$2"
+}
+
+# The share of the bar a download fills: from the "fetched" step up to where
+# the checksum step starts.
+PROGRESS_FETCH_END=55
+
+# curl_to <url> <file> — download to a file. Inside a --progress job, for the
+# job's own item, curl's progress bar is turned into step lines as the bytes
+# arrive (one per whole percent of the bar, flushed), so the count and the line
+# move with the download instead of jumping from the first step to the last.
+curl_to() {
+    if [ "$PROGRESS" != 1 ] || [ -z "$CANCEL_ITEM" ]; then
+        curl -fsSL --connect-timeout 5 --speed-limit 1 --speed-time 30 -o "$2" "$1"
+        return
+    fi
+    ct_rc="$2.rc"
+    # curl's own exit status cannot come back through the pipe, so it goes
+    # through a file; -# draws "####   42.0%" frames separated by carriage
+    # returns on stderr, whatever stderr is.
+    { curl -fL -# --connect-timeout 5 --speed-limit 1 --speed-time 30 -o "$2" "$1" 2>&1
+      echo "$?" > "$ct_rc"; } |
+        tr '\r' '\n' |
+        awk -v name="$CANCEL_ITEM" -v from="$PROGRESS_AT" -v to="$PROGRESS_FETCH_END" '
+            match($0, /[0-9]+(\.[0-9]+)?%/) {
+                p = substr($0, RSTART, RLENGTH - 1) + 0
+                v = int(from + (to - from) * p / 100)
+                if (v > last) { last = v; printf "step\t%s\t%d\tfetched\n", name, v; fflush() }
+            }'
+    ct_status=$(cat "$ct_rc" 2>/dev/null || echo 1)
+    rm -f "$ct_rc"
+    [ "$ct_status" = 0 ] || return 1
+    PROGRESS_AT=$PROGRESS_FETCH_END
+    return 0
+}
+
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # Runs on SIGTERM (a plain kill or the whole process group tlstore-ui signals
@@ -566,13 +611,14 @@ download() {
     mkdir -p "$dl_dir" || return 1
     dl_tmp="$dl_dir/.$(basename "$dl_dest").$$.part"
     CANCEL_TMP="$dl_tmp"
-    if ! curl -fsSL --connect-timeout 5 --speed-limit 1 --speed-time 30 -o "$dl_tmp" "$dl_url"; then
+    if ! curl_to "$dl_url" "$dl_tmp"; then
         rm -f "$dl_tmp"
         CANCEL_TMP=""
         err "could not download $(basename "$dl_dest")"
         return 1
     fi
     if [ "$dl_expect" != "-" ] && [ -n "$dl_expect" ]; then
+        progress_stage 60 "signature checked"
         dl_actual=$(file_digest "$dl_tmp")
         if [ -z "$dl_actual" ]; then
             rm -f "$dl_tmp"
@@ -587,6 +633,7 @@ download() {
             return 1
         fi
     fi
+    progress_stage 90 "putting files in place"
     mv "$dl_tmp" "$dl_dest" || { CANCEL_TMP=""; return 1; }
     CANCEL_TMP=""
     return 0
@@ -1087,7 +1134,7 @@ do_npm_musl() {
         np_tmp="$CACHE_DIR/$ii_name.tgz"
         mkdir -p "$CACHE_DIR"
         CANCEL_TMP="$np_tmp"
-        curl -fsSL --connect-timeout 5 --speed-limit 1 --speed-time 30 -o "$np_tmp" "$np_tarball" || { rm -f "$np_tmp"; CANCEL_TMP=""; err "could not download $ii_name"; return 1; }
+        curl_to "$np_tarball" "$np_tmp" || { rm -f "$np_tmp"; CANCEL_TMP=""; err "could not download $ii_name"; return 1; }
         np_actual=$(sha512sum "$np_tmp" | cut -d' ' -f1)
         if [ "$np_actual" != "$np_expect" ]; then
             rm -f "$np_tmp"
@@ -2504,12 +2551,13 @@ cmd_install() {
     for ci_n in $ci_plan; do
         if [ "$PROGRESS" = 1 ]; then
             CANCEL_ITEM="$ci_n"
-            progress_line step "$ci_n" 10 fetched
+            PROGRESS_AT=0
+            progress_stage 10 fetched
             PROGRESS_NOTE=""
             if install_item "$ci_n"; then
-                progress_line step "$ci_n" 60 "signature checked"
-                progress_line step "$ci_n" 90 "putting files in place"
-                progress_line step "$ci_n" 100 ready
+                progress_stage 60 "signature checked"
+                progress_stage 90 "putting files in place"
+                progress_stage 100 ready
                 progress_done "$ci_n" ok "${PROGRESS_NOTE:-installed}"
             else
                 FAILED=1
@@ -2701,12 +2749,13 @@ update_items() {
         for cu_n in $cu_out; do
             if [ "$PROGRESS" = 1 ]; then
                 CANCEL_ITEM="$cu_n"
-                progress_line step "$cu_n" 10 fetched
+                PROGRESS_AT=0
+                progress_stage 10 fetched
                 PROGRESS_NOTE=""
                 if install_item "$cu_n" 1; then
-                    progress_line step "$cu_n" 60 "signature checked"
-                    progress_line step "$cu_n" 90 "putting files in place"
-                    progress_line step "$cu_n" 100 ready
+                    progress_stage 60 "signature checked"
+                    progress_stage 90 "putting files in place"
+                    progress_stage 100 ready
                     progress_done "$cu_n" ok "${PROGRESS_NOTE:-updated}"
                 else
                     FAILED=1

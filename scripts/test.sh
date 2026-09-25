@@ -1305,6 +1305,18 @@ y
     expect_out "the putting-files step" $'^step\tfakebin\t90\tputting files in place$'
     expect_out "the ready step" $'^step\tfakebin\t100\tready$'
     expect_out "the done line, ok" $'^done\tfakebin\tok\tinstalled$'
+    # The download reports its own share of the bar (curl's progress, up to 55),
+    # and no step is reported twice or out of order.
+    got=$(printf '%s\n' "$OUT" | awk -F '\t' '$1 == "step" && $2 == "fakebin" { print $3 }' | tr '\n' ' ')
+    case "$got" in
+        "10 "*"55 60 90 100 ") pass ;;
+        *) fail "the download fills 10..55, then checksum, placing, ready" "$got" ;;
+    esac
+    if printf '%s\n' "$got" | tr ' ' '\n' | awk 'NF && $1 + 0 <= last { bad = 1 } NF { last = $1 + 0 } END { exit bad }'; then
+        pass
+    else
+        fail "step percentages only ever grow" "$got"
+    fi
     expect_no_out "stdout alone carries no human narration" "Installing:"
     expect_file "the item really is installed" "$TESTHOME/.local/bin/fakebin"
 
