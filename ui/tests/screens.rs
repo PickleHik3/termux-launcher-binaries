@@ -858,15 +858,16 @@ fn kitty_terminal_gets_header_pictures_the_pill_and_links() {
     let (pic_id, _) = id;
     assert!(h.out.contains(&format!("_Ga=p,i={pic_id},p=1")), "the pill is placed again:\n{:?}", h.out);
     assert!(!h.out.contains(&format!(",i={pic_id},q=2,o=z")), "and not uploaded again:\n{:?}", h.out);
-    // The header picture is faded along its bottom edge.
+    // The header picture is a card: corners cut away, opaque edges (the border), no fade.
     let router = h.router.as_mut().unwrap();
     let mut f = Frame::new(&mut h.ctx);
     router.draw(&mut f);
     let pic = f.places.iter().find(|p| p.pic.height() > 100).expect("header picture placed").pic.clone();
     let (w, hh) = (pic.width() as usize, pic.height() as usize);
     let alpha = |x: usize, y: usize| pic.rgba()[(y * w + x) * 4 + 3];
+    assert_eq!(alpha(0, 0), 0, "rounded corner");
     assert_eq!(alpha(w / 2, 0), 255);
-    assert!(alpha(w / 2, hh - 1) < 10, "{}", alpha(w / 2, hh - 1));
+    assert_eq!(alpha(w / 2, hh - 1), 255, "the bottom is a border now, not a fade");
     // Item: the README's first image becomes the header picture; links carry OSC 8.
     open_item(&mut h, "dawn");
     let calls = h.log("calls.log");
