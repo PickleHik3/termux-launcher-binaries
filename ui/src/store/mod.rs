@@ -1,8 +1,13 @@
 //! The store's screens. One [`Router`] is the only `app::Screen`: it owns the shared state
 //! ([`Store`]), a stack of [`View`]s, the background tasks, and the single place navigation
 //! happens (where [`scene::Motion`] gets its leave/enter hooks).
+//!
+//! Nothing here waits on the script or on a decode: the catalog arrives as a `snapshot`
+//! task, assets as `prefetch` lines and fetch tasks, pictures and READMEs from the decode
+//! worker ([`decode`]); every draw uses what has arrived and reserves room for what has not.
 
 pub mod data;
+pub mod decode;
 pub mod front;
 pub mod installing;
 pub mod item;
@@ -12,21 +17,22 @@ pub mod proc;
 pub mod readme;
 pub mod scene;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::fd::RawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::app::{Ctx, Nav, Screen};
 use crate::layout::{self, Header, PICTURE_MAX_ROWS};
-use crate::picture::Picture;
+use crate::picture::{self, FileKey, Lookup, Picture, Pictures};
 use crate::render::Frame;
 use crate::term::{Event, Key};
 
-use data::{parse_progress, parse_updates, Catalog, Progress, STEPS};
+use data::{parse_progress, parse_updates, AssetKind, Catalog, Progress, Snapshot, STEPS};
+use decode::{Decoder, Done as Answer, Job as DecodeJob};
 use paint::{draw_keys, draw_notice, Facts, Paint, Slots, A_HOME, A_KEY0};
-use proc::{Env, Fetch, Task, TaskKind};
+use proc::{parse_prefetch, Env, Fetch, Task, TaskKind};
 use scene::{Fx, Motion, NavKind, NoMotion, Phase, Scene};
 
 /// How long an item rests under the cursor before its header picture is placed.
@@ -293,6 +299,28 @@ pub struct Store {
     fetched: HashMap<Fetch, Got>,
     /// Parsed READMEs by item name (the fetched file, read once).
     docs: HashMap<String, Rc<readme::Doc>>,
+    /// READMEs the decode worker is parsing now.
+    parsing: HashSet<String>,
+    /// The decode worker, started the first time something needs decoding.
+    decoder: Option<Decoder>,
+    /// Pictures the decode worker is fitting now.
+    decoding: HashSet<FileKey>,
+    /// Take another snapshot once the running one lands: something moved meanwhile.
+    snapshot_again: bool,
+    /// The snapshot on its way was asked for by a refresh: failed fetches may be tried again
+    /// and the prefetch runs again.
+    snapshot_for_refresh: bool,
+    /// The refresh's own answer (online, `latest` resolved), laid over the snapshot it asked for.
+    refreshed_updates: Option<Vec<data::Update>>,
+    /// The prefetch has been started for this catalog.
+    prefetched: bool,
+    /// Run the prefetch again once the running one ends (the catalog moved).
+    prefetch_again: bool,
+    /// Fetches the running prefetch is expected to answer; asked for one by one if it ends
+    /// without them.
+    awaiting: HashSet<Fetch>,
+    /// A job ended since the router last asked.
+    job_finished: bool,
     /// "Now" as the router's clock says (a fake clock in tests).
     pub now: Instant,
     /// The router keeps ticking until then (a header picture waiting out its rest).
@@ -309,13 +337,21 @@ pub fn osc99(title: &str, body: &str) -> String {
     format!("\x1b]99;i=tlstore:d=0;{}\x1b\\\x1b]99;i=tlstore:p=body;{}\x1b\\", clean(title), clean(body))
 }
 
+impl Fetch {
+    /// True for what `tlstore prefetch` fetches for every item (a README's pictures beyond
+    /// the first are asked for one by one).
+    fn prefetched(&self) -> bool {
+        matches!(self, Fetch::Picture(_) | Fetch::Demo(_) | Fetch::Readme(_))
+    }
+}
+
 impl Store {
-    /// Loads the catalog and starts the background refresh and the gh check.
+    /// Asks for the snapshot and starts the background refresh and the gh check; nothing
+    /// waits.
     pub fn new(env: Env) -> Store {
-        let cat = Catalog::load(&env);
         let mut st = Store {
             env,
-            cat,
+            cat: Catalog::loading(),
             job: None,
             tasks: Vec::new(),
             gh: Gh::Checking,
@@ -326,11 +362,22 @@ impl Store {
             pending_star: None,
             fetched: HashMap::new(),
             docs: HashMap::new(),
+            parsing: HashSet::new(),
+            decoder: None,
+            decoding: HashSet::new(),
+            snapshot_again: false,
+            snapshot_for_refresh: false,
+            refreshed_updates: None,
+            prefetched: false,
+            prefetch_again: false,
+            awaiting: HashSet::new(),
+            job_finished: false,
             now: Instant::now(),
             wake_at: None,
             header_since: None,
             leaving: false,
         };
+        st.take_snapshot();
         if let Ok(t) = Task::spawn(&st.env.tlstore, &["update", "--check", "--tsv"], TaskKind::Refresh) {
             st.tasks.push(t);
             st.refreshing = true;
@@ -340,6 +387,140 @@ impl Store {
             Err(_) => st.gh = Gh::Missing,
         }
         st
+    }
+
+    fn has_task(&self, kind: &TaskKind) -> bool {
+        self.tasks.iter().any(|t| &t.kind == kind)
+    }
+
+    /// Asks the script for a fresh snapshot (queued behind one on its way).
+    fn take_snapshot(&mut self) {
+        if self.has_task(&TaskKind::Snapshot) {
+            self.snapshot_again = true;
+            return;
+        }
+        match Task::spawn(&self.env.tlstore, &["snapshot", "--tsv"], TaskKind::Snapshot) {
+            Ok(t) => self.tasks.push(t),
+            Err(_) => self.cat.fail(),
+        }
+    }
+
+    /// Starts `tlstore prefetch` (again, once the running one ends, when asked meanwhile).
+    fn start_prefetch(&mut self) {
+        if self.has_task(&TaskKind::Prefetch) {
+            self.prefetch_again = true;
+            return;
+        }
+        self.prefetch_again = false;
+        if self.cat.items.is_empty() {
+            return;
+        }
+        if let Ok(t) = Task::spawn(&self.env.tlstore, &["prefetch"], TaskKind::Prefetch) {
+            self.tasks.push(t);
+            self.prefetched = true;
+        }
+    }
+
+    /// The snapshot landed: the catalog, every item's info, the offline updates, and what is
+    /// cached already.
+    fn apply_snapshot(&mut self, code: i32, lines: Vec<String>) {
+        let for_refresh = std::mem::take(&mut self.snapshot_for_refresh);
+        if code != 0 {
+            self.cat.fail();
+            return;
+        }
+        let snap = Snapshot::parse(&lines.join("\n"));
+        if for_refresh {
+            // The list moved: what could not be fetched before may be there now.
+            self.fetched.retain(|_, g| !matches!(g, Got::Failed(_)));
+        }
+        for (name, kind, path) in &snap.cached {
+            let f = match kind {
+                AssetKind::Picture => Fetch::Picture(name.clone()),
+                AssetKind::Demo => Fetch::Demo(name.clone()),
+                AssetKind::Readme => Fetch::Readme(name.clone()),
+                AssetKind::Asset => continue,
+            };
+            self.landed(f, Got::Ready(path.clone()), false);
+        }
+        // What an item does not have is known now, with no script run.
+        for it in &snap.items {
+            let info = snap.infos.get(&it.name);
+            let has = |k: &str| info.is_some_and(|i| i.has(k));
+            if !has("Picture") {
+                self.fetched.insert(Fetch::Picture(it.name.clone()), Got::Failed(1));
+            }
+            if !has("Demo") {
+                self.fetched.insert(Fetch::Demo(it.name.clone()), Got::Failed(1));
+            }
+            if !has("Readme") && !has("Upstream") {
+                self.fetched.insert(Fetch::Readme(it.name.clone()), Got::Failed(2));
+            }
+        }
+        self.cat.apply(snap);
+        if let Some(u) = self.refreshed_updates.take() {
+            self.cat.updates = u;
+        }
+        if !self.prefetched || for_refresh {
+            self.start_prefetch();
+        }
+    }
+
+    /// An asset's answer arrived from the snapshot or the prefetch (`fetched` says which: the
+    /// prefetch may have brought a newer copy under the same name, so a README it reports is
+    /// parsed again). A file that is not there counts as nothing; a failure never covers a
+    /// copy already in hand.
+    fn landed(&mut self, f: Fetch, got: Got, fetched: bool) {
+        let got = match got {
+            Got::Ready(p) if !p.is_file() => Got::Failed(1),
+            g => g,
+        };
+        self.awaiting.remove(&f);
+        match (self.fetched.get(&f), &got) {
+            (Some(Got::Ready(_)), Got::Failed(_)) => return,
+            (Some(Got::Ready(old)), Got::Ready(new)) if old == new => {
+                if let Fetch::Readme(n) = &f {
+                    if fetched && !self.parsing.contains(n) {
+                        self.docs.remove(n);
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        if let Fetch::Readme(n) = &f {
+            self.docs.remove(n);
+            self.parsing.remove(n);
+        }
+        self.fetched.insert(f, got);
+    }
+
+    /// One line of the prefetch stream.
+    fn on_prefetch_line(&mut self, line: &str) {
+        let Some(l) = parse_prefetch(line) else { return };
+        let f = match l.kind {
+            AssetKind::Picture => Fetch::Picture(l.name),
+            AssetKind::Demo => Fetch::Demo(l.name),
+            AssetKind::Readme => Fetch::Readme(l.name),
+            AssetKind::Asset => match l.src {
+                Some(src) => Fetch::Asset(l.name, src),
+                None => return,
+            },
+        };
+        let got = match l.result {
+            Ok(p) => Got::Ready(p),
+            Err(_) => Got::Failed(1),
+        };
+        self.landed(f, got, true);
+    }
+
+    /// The prefetch ended: whatever it never answered is asked for one by one, as needed.
+    fn prefetch_done(&mut self) {
+        for f in std::mem::take(&mut self.awaiting) {
+            if matches!(self.fetched.get(&f), Some(Got::Pending)) {
+                self.fetched.remove(&f);
+            }
+        }
     }
 
     pub fn job_running(&self) -> bool {
@@ -399,8 +580,10 @@ impl Store {
         }
     }
 
+    /// The job is over: the catalog is asked for again (nothing waits), the phone is told.
     fn finish_job(&mut self) {
-        self.cat.reload(&self.env);
+        self.take_snapshot();
+        self.job_finished = true;
         let Some(job) = &self.job else { return };
         let lines = job.summary();
         let body = lines.first().cloned().unwrap_or_default();
@@ -409,18 +592,30 @@ impl Store {
         }
     }
 
+    /// True once, after a job has ended (the router puts its summary on the notice row).
+    pub fn take_job_finished(&mut self) -> bool {
+        std::mem::take(&mut self.job_finished)
+    }
+
     /// Fds the app loop should watch.
     pub fn watch(&self) -> Vec<RawFd> {
         let mut v: Vec<RawFd> = self.tasks.iter().filter_map(Task::fd).collect();
         if let Some(fd) = self.job.as_ref().and_then(|j| j.task.as_ref()).and_then(Task::fd) {
             v.push(fd);
         }
+        if let Some(d) = self.decoder.as_ref().filter(|d| d.busy()) {
+            v.push(d.fd());
+        }
         v
     }
 
-    /// Reads the task behind `fd`. Returns true when the catalog was reloaded.
-    pub fn on_readable(&mut self, fd: RawFd) -> bool {
-        let mut reloaded = false;
+    /// Reads whatever is behind `fd`: a task's output, or the decode worker's answers (which
+    /// go into `pics`). Returns true when the catalog was reloaded.
+    pub fn on_readable(&mut self, fd: RawFd, pics: &mut Pictures) -> bool {
+        if self.decoder.as_ref().is_some_and(|d| d.fd() == fd) {
+            self.on_decoded(pics);
+            return false;
+        }
         if let Some(job) = self.job.as_mut() {
             if let Some(t) = job.task.as_mut().filter(|t| t.fd() == Some(fd)) {
                 let out = t.read();
@@ -430,30 +625,70 @@ impl Store {
                 if let Some(code) = out.exit {
                     job.exit = Some(code);
                     self.finish_job();
-                    reloaded = true;
                 }
-                return reloaded;
+                return false;
             }
         }
         let Some(i) = self.tasks.iter().position(|t| t.fd() == Some(fd)) else { return false };
         let out = self.tasks[i].read();
-        // Output is judged whole at exit; keep what came before it.
-        self.tasks[i].lines.extend(out.lines);
+        if self.tasks[i].kind == TaskKind::Prefetch {
+            // A stream: every line counts as it comes.
+            for l in &out.lines {
+                self.on_prefetch_line(l);
+            }
+        } else {
+            // Output judged whole at exit; keep what came before it.
+            self.tasks[i].lines.extend(out.lines);
+        }
         let Some(code) = out.exit else { return false };
         let task = self.tasks.remove(i);
         let lines = task.lines;
+        let mut reloaded = false;
         match task.kind {
+            TaskKind::Snapshot => {
+                self.apply_snapshot(code, lines);
+                reloaded = true;
+                if std::mem::take(&mut self.snapshot_again) {
+                    self.take_snapshot();
+                }
+            }
+            TaskKind::Prefetch => {
+                self.prefetch_done();
+                if self.prefetch_again {
+                    self.start_prefetch();
+                }
+            }
             TaskKind::Refresh => {
                 self.refreshing = false;
-                let updates = lines.join("\n");
-                self.cat.reload(&self.env);
                 if code == 0 {
-                    self.cat.updates = parse_updates(&updates);
+                    self.refreshed_updates = Some(parse_updates(&lines.join("\n")));
                 }
-                reloaded = true;
+                self.snapshot_for_refresh = true;
+                self.take_snapshot();
                 self.spawn_job();
             }
-            TaskKind::GhAuth => self.gh = if code == 0 { Gh::Ready } else { Gh::SignedOut },
+            TaskKind::Fullscreen(want) => {
+                if code != 0 {
+                    self.fullscreen = !want;
+                    self.notice = Some("The keyboard could not be put away here.".into());
+                }
+            }
+            TaskKind::GhAuth => {
+                self.gh = if code == 0 { Gh::Ready } else { Gh::SignedOut };
+                // `s` was pressed while gh was still being asked.
+                if let Some(repo) = self.pending_star.take() {
+                    if self.gh == Gh::Ready {
+                        self.want_star(&repo);
+                        if self.starred(&repo).is_some() {
+                            self.toggle_star(&repo);
+                        } else {
+                            self.pending_star = Some(repo);
+                        }
+                    } else {
+                        self.notice = Some(GH_NOTICE.into());
+                    }
+                }
+            }
             TaskKind::GhStarred(repo) => {
                 self.stars.insert(repo.clone(), Some(code == 0));
                 if self.pending_star.as_deref() == Some(repo.as_str()) {
@@ -475,6 +710,10 @@ impl Store {
                     Some(p) if code == 0 && p.is_file() => Got::Ready(p),
                     _ => Got::Failed(code),
                 };
+                if let Fetch::Readme(n) = &f {
+                    self.docs.remove(n);
+                    self.parsing.remove(n);
+                }
                 self.fetched.insert(f, got);
             }
             TaskKind::Job | TaskKind::Detached => {}
@@ -482,10 +721,75 @@ impl Store {
         reloaded
     }
 
-    /// Asks the script for `f` (once) and says what it has answered so far.
+    /// Takes the decode worker's answers into the picture cache and the README store.
+    fn on_decoded(&mut self, pics: &mut Pictures) {
+        let Some(d) = self.decoder.as_mut() else { return };
+        for done in d.drain() {
+            match done {
+                Answer::Picture { key, result } => {
+                    self.decoding.remove(&key);
+                    match result {
+                        Ok(dec) => {
+                            pics.insert_decoded(key, dec);
+                        }
+                        Err(_) => pics.note_failed(key),
+                    }
+                }
+                Answer::Readme { name, doc } => {
+                    self.parsing.remove(&name);
+                    self.docs.insert(name, Rc::new(doc));
+                }
+            }
+        }
+    }
+
+    /// Hands a job to the decode worker; false when there is no worker (the caller does the
+    /// work itself, then).
+    fn submit(&mut self, job: DecodeJob) -> bool {
+        if self.decoder.is_none() {
+            self.decoder = Decoder::new().ok();
+        }
+        match self.decoder.as_mut() {
+            Some(d) => {
+                d.submit(job);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The picture `key` names, fitted, when it has been decoded: asks the worker the first
+    /// time and answers `Missing` until it is done, `Failed` when it could not be.
+    pub fn picture(&mut self, pics: &mut Pictures, key: FileKey) -> Lookup {
+        match pics.lookup(&key) {
+            Lookup::Missing if !self.decoding.contains(&key) => {
+                if self.submit(DecodeJob::Picture(key.clone())) {
+                    self.decoding.insert(key);
+                    Lookup::Missing
+                } else {
+                    match picture::decode_file(&key) {
+                        Ok(d) => Lookup::Have(pics.insert_decoded(key, d)),
+                        Err(_) => {
+                            pics.note_failed(key);
+                            Lookup::Failed
+                        }
+                    }
+                }
+            }
+            l => l,
+        }
+    }
+
+    /// Asks the script for `f` (once) and says what it has answered so far. While the
+    /// prefetch runs it answers for every picture, demo and readme, so nothing is asked twice.
     pub fn fetch(&mut self, f: Fetch) -> Got {
         if let Some(g) = self.fetched.get(&f) {
             return g.clone();
+        }
+        if f.prefetched() && self.has_task(&TaskKind::Prefetch) {
+            self.awaiting.insert(f.clone());
+            self.fetched.insert(f, Got::Pending);
+            return Got::Pending;
         }
         let got = match Task::spawn(&self.env.tlstore, &f.args(), TaskKind::Fetch(f.clone())) {
             Ok(t) => {
@@ -498,6 +802,16 @@ impl Store {
         got
     }
 
+    /// What is known for `f`: asks for it when `spawn`, otherwise only looks (an unknown
+    /// answer reads as pending, so room is kept for it).
+    fn look(&mut self, f: Fetch, spawn: bool) -> Got {
+        if spawn {
+            self.fetch(f)
+        } else {
+            self.fetched.get(&f).cloned().unwrap_or(Got::Pending)
+        }
+    }
+
     /// The item's catalog picture, once fetched.
     pub fn picture_path(&mut self, name: &str) -> Option<PathBuf> {
         match self.fetch(Fetch::Picture(name.to_string())) {
@@ -506,21 +820,34 @@ impl Store {
         }
     }
 
-    /// The item's README, parsed under its `readme-skip` list, once fetched.
+    /// The item's README, parsed under its `readme-skip` list, once fetched (the worker
+    /// parses it; `Loading` until then).
     pub fn readme(&mut self, name: &str) -> Readme {
+        self.readme_with(name, true)
+    }
+
+    fn readme_with(&mut self, name: &str, spawn: bool) -> Readme {
         if let Some(d) = self.docs.get(name) {
             return Readme::Doc(d.clone());
         }
-        match self.fetch(Fetch::Readme(name.to_string())) {
+        match self.look(Fetch::Readme(name.to_string()), spawn) {
             Got::Pending => Readme::Loading,
             Got::Failed(2) => Readme::NoUpstream,
             Got::Failed(_) => Readme::Unavailable,
             Got::Ready(p) => {
-                let text = std::fs::read_to_string(&p).unwrap_or_default();
-                let skip = self.cat.info(&self.env, name).readme_skip();
-                let doc = Rc::new(readme::parse(&text, &skip));
-                self.docs.insert(name.to_string(), doc.clone());
-                Readme::Doc(doc)
+                if !self.parsing.contains(name) {
+                    let skip = self.cat.info(name).readme_skip();
+                    let job = DecodeJob::Readme { name: name.to_string(), path: p.clone(), skip: skip.clone() };
+                    if self.submit(job) {
+                        self.parsing.insert(name.to_string());
+                    } else {
+                        let text = std::fs::read_to_string(&p).unwrap_or_default();
+                        let doc = Rc::new(readme::parse(&text, &skip));
+                        self.docs.insert(name.to_string(), doc.clone());
+                        return Readme::Doc(doc);
+                    }
+                }
+                Readme::Loading
             }
         }
     }
@@ -532,17 +859,24 @@ impl Store {
 
     /// The header picture's file for `name`: the README's first image when it has arrived,
     /// else the catalog picture. `None` while nothing has arrived or nothing exists; the
-    /// bool says whether something may still come.
-    pub fn header_picture_path(&mut self, name: &str, readme_first: bool, animate: bool) -> (Option<PathBuf>, bool) {
+    /// bool says whether something may still come. With `spawn` false nothing is asked for,
+    /// only looked up (the item has not rested under the cursor yet).
+    pub fn header_picture_path(
+        &mut self,
+        name: &str,
+        readme_first: bool,
+        animate: bool,
+        spawn: bool,
+    ) -> (Option<PathBuf>, bool) {
         // The hero clip wins once it is here; until then (or without one) the still shows.
         if animate {
-            if let Got::Ready(p) = self.fetch(Fetch::Demo(name.to_string())) {
+            if let Got::Ready(p) = self.look(Fetch::Demo(name.to_string()), spawn) {
                 return (Some(p), false);
             }
         }
         let mut pending = false;
         if readme_first {
-            let first = match self.readme(name) {
+            let first = match self.readme_with(name, spawn) {
                 Readme::Loading => {
                     pending = true;
                     None
@@ -551,14 +885,14 @@ impl Store {
                 _ => None,
             };
             if let Some(src) = first {
-                match self.asset_path(name, &src) {
+                match self.look(Fetch::Asset(name.to_string(), src), spawn) {
                     Got::Ready(p) => return (Some(p), false),
                     Got::Pending => pending = true,
                     Got::Failed(_) => {}
                 }
             }
         }
-        match self.fetch(Fetch::Picture(name.to_string())) {
+        match self.look(Fetch::Picture(name.to_string()), spawn) {
             Got::Ready(p) => (Some(p), pending),
             Got::Pending => (None, true),
             Got::Failed(_) => (None, pending),
@@ -603,9 +937,10 @@ impl Store {
         }
     }
 
-    /// True while a background task other than a job runs (a fetch, a gh call).
+    /// True while a background task other than a job runs (a fetch, a gh call, the
+    /// snapshot, the prefetch) or the decode worker has something in hand.
     pub fn tasks_pending(&self) -> bool {
-        !self.tasks.is_empty()
+        !self.tasks.is_empty() || self.decoder.as_ref().is_some_and(|d| d.busy())
     }
 
     /// The item the header shows.
@@ -618,7 +953,7 @@ impl Store {
     pub fn facts(&mut self, name: &str, state: Option<&str>) -> Facts {
         let item = self.cat.item(name).cloned();
         let upd = self.cat.update_for(name).cloned();
-        let info = self.cat.info(&self.env, name).clone();
+        let info = self.cat.info(name).clone();
         let version = match (&upd, &item) {
             (Some(u), _) => u.have.clone(),
             (None, Some(i)) => i.installed.clone().unwrap_or_else(|| i.version.clone()),
@@ -657,15 +992,9 @@ impl Store {
         self.stars.get(repo).copied().flatten()
     }
 
-    /// Answers "is gh signed in" now, waiting for it if the startup check is still running.
-    pub fn gh_now(&mut self) -> Gh {
-        if self.gh == Gh::Checking {
-            if let Some(i) = self.tasks.iter().position(|t| t.kind == TaskKind::GhAuth) {
-                let mut t = self.tasks.remove(i);
-                let out = t.finish();
-                self.gh = if out.exit == Some(0) { Gh::Ready } else { Gh::SignedOut };
-            }
-        }
+    /// What gh has said so far (`Checking` while the startup check still runs; nothing
+    /// waits for it).
+    pub fn gh_now(&self) -> Gh {
         self.gh
     }
 
@@ -690,10 +1019,11 @@ impl Store {
     }
 
     /// The `s` key on an item: star through gh, or say what gh needs on the notice row.
-    /// True when a star was asked for.
+    /// True when a star was asked for. While gh is still being asked, the star waits for
+    /// its answer.
     pub fn star(&mut self, name: &str) -> bool {
-        let Some(repo) = self.cat.info(&self.env, name).upstream().map(str::to_string) else { return false };
-        match self.gh_now() {
+        let Some(repo) = self.cat.info(name).upstream().map(str::to_string) else { return false };
+        match self.gh {
             Gh::Ready => {
                 self.want_star(&repo);
                 if self.starred(&repo).is_some() {
@@ -701,6 +1031,10 @@ impl Store {
                 } else {
                     self.pending_star = Some(repo);
                 }
+                true
+            }
+            Gh::Checking => {
+                self.pending_star = Some(repo);
                 true
             }
             _ => {
@@ -729,24 +1063,28 @@ impl Store {
         self.open_url(&format!("https://github.com/{repo}"));
     }
 
-    /// `f`: asks the launcher to hold its keyboard down, or to bring it back.
+    /// `f`: asks the launcher to hold its keyboard down, or to bring it back (in the
+    /// background; put back if the launcher says no).
     pub fn toggle_fullscreen(&mut self) {
         let Some(lc) = self.env.launcherctl.clone() else { return };
-        let args: &[&str] =
-            if self.fullscreen { &["keyboard", "show"] } else { &["keyboard", "hide", "--hold"] };
-        if matches!(self.env.run(&lc, args), Ok((0, _))) {
-            self.fullscreen = !self.fullscreen;
-        } else {
-            self.notice = Some("The keyboard could not be put away here.".into());
+        let want = !self.fullscreen;
+        let args: &[&str] = if want { &["keyboard", "hide", "--hold"] } else { &["keyboard", "show"] };
+        match Task::spawn(&lc, args, TaskKind::Fullscreen(want)) {
+            Ok(t) => {
+                self.tasks.push(t);
+                self.fullscreen = want;
+            }
+            Err(_) => self.notice = Some("The keyboard could not be put away here.".into()),
         }
     }
 }
 
 /// The header for `name` with its picture fitted: asks for the picture off the draw path,
-/// reserves its rows while it may still come (`reserve`), clamps them to the picture's own
-/// height once it is here, and only places it after the item has rested in the header. With
-/// `animate` (and motion on), an APNG picture plays: the still is placed first and its
-/// frames follow in place (`Renderer::stream`).
+/// reserves its rows while it may still come (`reserve`) or is being decoded, clamps them to
+/// the picture's own height once it is here, and only places it after the item has rested
+/// in the header (nothing is asked for before that). With `animate` (and motion on), an APNG
+/// picture plays: the still is placed first and its frames follow in place
+/// (`Renderer::stream`). Every decode happens on the worker; a frame uses what is there.
 pub fn header_for(
     p: &mut Paint,
     st: &mut Store,
@@ -766,8 +1104,8 @@ pub fn header_for(
         return (layout::header(cols, rows, body_need, None), None);
     }
     let animate = animate && p.f.ctx.motion;
-    let (path, pending) = st.header_picture_path(name, readme_first, animate);
     let rested = st.header_rested(name, p.f.ctx.motion);
+    let (path, pending) = st.header_picture_path(name, readme_first, animate, rested);
     let Some(path) = path else {
         let pic_rows = (pending || reserve).then_some(u16::MAX);
         return (layout::header(cols, rows, body_need, pic_rows), None);
@@ -777,10 +1115,15 @@ pub fn header_for(
     let box_h = PICTURE_MAX_ROWS as u32 * ch as u32;
     // The probe is a still: it only measures, and may never be placed.
     p.f.ctx.pics.card_edge = p.f.pal().rule;
-    let probe = p.f.ctx.pics.header_picture(&path, box_w, box_h, false).ok();
-    let Some(probe) = probe else {
-        let pic_rows = reserve.then_some(u16::MAX);
-        return (layout::header(cols, rows, body_need, pic_rows), None);
+    let probe_key = p.f.ctx.pics.header_key(&path, box_w, box_h, false);
+    let probe = match st.picture(&mut p.f.ctx.pics, probe_key) {
+        Lookup::Have(pic) => pic,
+        // Being decoded: its rows are kept so nothing jumps when it lands.
+        Lookup::Missing => return (layout::header(cols, rows, body_need, Some(u16::MAX)), None),
+        Lookup::Failed => {
+            let pic_rows = reserve.then_some(u16::MAX);
+            return (layout::header(cols, rows, body_need, pic_rows), None);
+        }
     };
     let own_rows = if reserve { u16::MAX } else { probe.height().div_ceil(ch as u32).max(1) as u16 };
     let hdr = layout::header(cols, rows, body_need, Some(own_rows));
@@ -789,16 +1132,27 @@ pub fn header_for(
         return (hdr, None);
     }
     let (bw, bh) = (r.w as u32 * cw as u32, r.h as u32 * ch as u32);
-    let pic = if probe.width() <= bw && probe.height() <= bh {
-        if animate {
-            p.f.ctx.pics.header_picture(&path, box_w, box_h, true).ok()
-        } else {
-            Some(probe)
-        }
+    let fits = probe.width() <= bw && probe.height() <= bh;
+    if fits && !animate {
+        return (hdr, Some(probe));
+    }
+    // The clip at the probe's size, or a still refitted to the rows there are.
+    let key = if fits {
+        p.f.ctx.pics.header_key(&path, box_w, box_h, animate)
     } else {
-        p.f.ctx.pics.header_picture(&path, bw, bh, animate).ok()
+        p.f.ctx.pics.header_key(&path, bw, bh, animate)
+    };
+    let pic = match st.picture(&mut p.f.ctx.pics, key) {
+        Lookup::Have(pic) => Some(pic),
+        _ => None,
     };
     (hdr, pic)
+}
+
+/// The picture at `path` scaled into a box (a README picture), when decoded; see
+/// [`Store::picture`].
+pub fn picture_in(st: &mut Store, pics: &mut Pictures, path: &Path, box_w: u32, box_h: u32) -> Lookup {
+    st.picture(pics, Pictures::key(path, box_w, box_h, picture::Fit::Contain, None, false))
 }
 
 /// Hooks for the preview renderer (`--shot`): a job at a given percentage without running
@@ -1047,10 +1401,12 @@ impl Screen for Router {
         self.st.now = (self.clock)();
         match ev {
             Event::Readable(fd) => {
-                if self.st.on_readable(*fd) {
+                if self.st.on_readable(*fd, &mut ctx.pics) {
                     for v in &mut self.views {
                         v.refresh(&self.st);
                     }
+                }
+                if self.st.take_job_finished() {
                     if let Some(job) = self.st.job.as_ref().filter(|j| !j.running()) {
                         let lines = job.summary();
                         self.st.notice = if self.top() == "installing" {
@@ -1113,6 +1469,10 @@ impl Drop for Router {
                 let _ = self.st.env.run(&lc, &["keyboard", "show"]);
             }
             self.st.fullscreen = false;
+        }
+        // The prefetch has nobody to report to any more.
+        for t in self.st.tasks.iter().filter(|t| t.kind == TaskKind::Prefetch) {
+            t.terminate();
         }
         // Leaving mid-install: let it finish (its output still has a reader) rather than cut
         // it off halfway.

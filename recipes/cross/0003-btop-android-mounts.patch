@@ -1,0 +1,37 @@
+--- a/src/linux/btop_collect.cpp
++++ b/src/linux/btop_collect.cpp
+@@ -2286,6 +2286,13 @@
+ 						// A mountpoint can ascii escape codes, which will not work with `statvfs`.
+ 						mountpoint = convert_ascii_escapes(mountpoint);
+ 
++						#ifdef __ANDROID__
++							//? Every APEX module is a loop-mounted, read-only image under /apex — dozens of
++							//? them, each mounted twice. They are system files, not disks, and would crowd
++							//? the real ones out of the box.
++							if (mountpoint.starts_with("/apex/")) continue;
++						#endif
++
+ 						if (v_contains(ignore_list, mountpoint) or v_contains(found, mountpoint)) continue;
+ 
+ 						//? Match filter if not empty
+@@ -2419,6 +2426,11 @@
+ 				#else
+ 					if (disks.contains("/")) mem.disks_order.push_back("/");
+ 				#endif
++				#ifdef __ANDROID__
++					//? / is the read-only system image; /data is the phone's storage. Show it right
++					//? after root, ahead of the system partitions that are mounted before it.
++					if (disks.contains("/data")) mem.disks_order.push_back("/data");
++				#endif
+ 				if (swap_disk and has_swap) {
+ 					mem.disks_order.push_back("swap");
+ 					if (not disks.contains("swap")) disks["swap"] = {"", "swap", "swap"};
+@@ -2431,6 +2443,8 @@
+ 				for (const auto& name : last_found)
+ 					#ifdef SNAPPED
+ 						if (not is_in(name, "/mnt", "swap")) mem.disks_order.push_back(name);
++					#elif defined(__ANDROID__)
++						if (not is_in(name, "/", "/data", "swap")) mem.disks_order.push_back(name);
+ 					#else
+ 						if (not is_in(name, "/", "swap")) mem.disks_order.push_back(name);
+ 					#endif

@@ -123,11 +123,47 @@ impl Fetch {
     }
 }
 
+/// One line of `tlstore prefetch`: an asset that landed (or did not), as it happens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefetchLine {
+    pub name: String,
+    pub kind: super::data::AssetKind,
+    /// `Ok(path)` for a `ready` line, `Err(reason)` for a `failed` one.
+    pub result: Result<PathBuf, String>,
+    /// The address as written in the README, for a readme picture.
+    pub src: Option<String>,
+}
+
+/// Parses `ready\t<name>\t<kind>\t<path>[\t<src>]` / `failed\t<name>\t<kind>\t<reason>[\t<src>]`.
+pub fn parse_prefetch(line: &str) -> Option<PrefetchLine> {
+    let f: Vec<&str> = line.split('\t').collect();
+    if f.len() < 4 || f[1].is_empty() {
+        return None;
+    }
+    let kind = super::data::AssetKind::parse(f[2])?;
+    let result = match f[0] {
+        "ready" if !f[3].is_empty() => Ok(PathBuf::from(f[3])),
+        "failed" => Err(f[3].to_string()),
+        _ => return None,
+    };
+    let src = f.get(4).filter(|s| !s.is_empty()).map(|s| s.to_string());
+    if kind == super::data::AssetKind::Asset && src.is_none() {
+        return None;
+    }
+    Some(PrefetchLine { name: f[1].to_string(), kind, result, src })
+}
+
 /// What a background task is for; the router routes its result by this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaskKind {
     /// `tlstore install|update|remove --progress …`
     Job,
+    /// `tlstore snapshot --tsv`: the whole catalog, judged at exit.
+    Snapshot,
+    /// `tlstore prefetch`: one line per asset, read as it comes.
+    Prefetch,
+    /// `launcherctl keyboard hide --hold | show`; the bool is the fullscreen state asked for.
+    Fullscreen(bool),
     /// `tlstore update --check --tsv` (refreshes the catalog first).
     Refresh,
     /// `gh auth status`
@@ -250,6 +286,14 @@ impl Task {
         }
     }
 
+    /// The kind of fetch this task is, when it is one.
+    pub fn fetch(&self) -> Option<&Fetch> {
+        match &self.kind {
+            TaskKind::Fetch(f) => Some(f),
+            _ => None,
+        }
+    }
+
     /// Blocks until the child exits, reading and returning everything it still prints.
     pub fn finish(&mut self) -> Output {
         let mut all = Output::default();
@@ -263,5 +307,29 @@ impl Task {
             all.exit = o.exit;
         }
         all
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::data::AssetKind;
+
+    #[test]
+    fn prefetch_lines_parse() {
+        let l = parse_prefetch("ready\tdawn\tpicture\t/c/pictures/aa.jpg").unwrap();
+        assert_eq!((l.name.as_str(), l.kind), ("dawn", AssetKind::Picture));
+        assert_eq!(l.result, Ok(PathBuf::from("/c/pictures/aa.jpg")));
+        assert_eq!(l.src, None);
+        let l = parse_prefetch("ready\tdawn\tasset\t/c/readme/dawn/main/x.png\tassets/hero.png").unwrap();
+        assert_eq!(l.kind, AssetKind::Asset);
+        assert_eq!(l.src.as_deref(), Some("assets/hero.png"));
+        let l = parse_prefetch("failed\tkitten\treadme\tnot fetched, and no copy is kept").unwrap();
+        assert_eq!(l.result, Err("not fetched, and no copy is kept".into()));
+        assert!(parse_prefetch("ready\tdawn\tasset\t/c/x.png").is_none(), "a readme picture names its src");
+        assert!(parse_prefetch("ready\tdawn\tpicture\t").is_none(), "ready needs a path");
+        assert!(parse_prefetch("done\tdawn\tpicture\tx").is_none());
+        assert!(parse_prefetch("ready\tdawn\tthing\tx").is_none());
+        assert!(parse_prefetch("").is_none());
     }
 }

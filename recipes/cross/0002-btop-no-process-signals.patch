@@ -1,0 +1,589 @@
+--- a/src/btop_config.cpp
++++ b/src/btop_config.cpp
+@@ -77,7 +77,7 @@ namespace Config {
+ 								"#* Example: \"cpu:0:default,mem:0:tty,proc:1:default cpu:0:braille,proc:0:tty\""},
+ 
+ 		{"vim_keys",			"#* Set to True to enable \"h,j,k,l,g,G\" keys for directional control in lists.\n"
+-								"#* Conflicting keys for h:\"help\" and k:\"kill\" is accessible while holding shift."},
++								"#* The conflicting key h:\"help\" is accessible while holding shift."},
+ 
+ 		{"disable_mouse", "#* Disable all mouse events."},
+ 		{"rounded_corners",		"#* Rounded corners on boxes, is ignored if TTY mode is ON."},
+--- a/src/btop_draw.cpp
++++ b/src/btop_draw.cpp
+@@ -1683,7 +1683,6 @@ namespace Proc {
+ 		auto& graph_symbol = (tty_mode ? "tty" : Config::getS("graph_symbol_proc"));
+ 		auto& graph_bg = Symbols::graph_symbols.at((graph_symbol == "default" ? Config::getS("graph_symbol") + "_up" : graph_symbol + "_up")).at(6);
+ 		auto mem_bytes = Config::getB("proc_mem_bytes");
+-		auto vim_keys = Config::getB("vim_keys");
+ 		auto show_graphs = Config::getB("proc_cpu_graphs");
+ 		const auto pause_proc_list = Config::getB("pause_proc_list");
+ 		auto follow_process = Config::getB("follow_process");
+@@ -1812,23 +1811,7 @@ namespace Proc {
+ 				const string t_color = (not alive or selected > 0 ? Theme::c("inactive_fg") : Theme::c("title"));
+ 				const string hi_color = (not alive or selected > 0 ? t_color : Theme::c("hi_fg"));
+ 				int mouse_x = d_x + 2;
+-				out += Mv::to(d_y, d_x + 1);
+-				if (width > 55) {
+-					out += Fx::ub + title_left + hi_color + Fx::b + 't' + t_color + "erminate" + Fx::ub + title_right;
+-					if (alive and selected == 0) Input::mouse_mappings["t"] = {d_y, mouse_x, 1, 9};
+-					mouse_x += 11;
+-				}
+-				out += title_left + hi_color + Fx::b + (vim_keys ? 'K' : 'k') + t_color + "ill" + Fx::ub + title_right
+-					+ title_left + hi_color + Fx::b + 's' + t_color + "ignals" + Fx::ub + title_right
+-					+ title_left + hi_color + Fx::b + 'N' + t_color + "ice" + Fx::ub + title_right;
+-				if (alive and selected == 0) {
+-					Input::mouse_mappings[vim_keys ? "K" : "k"] = {d_y, mouse_x, 1, 4};
+-					mouse_x += 6;
+-					Input::mouse_mappings["s"] = {d_y, mouse_x, 1, 7};
+-				    mouse_x += 9;
+-					Input::mouse_mappings["N"] = {d_y, mouse_x, 1, 5};
+-				    mouse_x += 7;
+-				}
++				out += Mv::to(d_y, d_x + 1) + Fx::ub;
+ 				if (width > 77) {
+ 				    fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}",
+ 				    	title_left, follow_process ? Fx::b : "",
+@@ -1924,22 +1907,6 @@ namespace Proc {
+ 				+ title_left_down + Fx::b + t_color + "info " + hi_color + Symbols::enter + Fx::ub + title_right_down;
+ 				if (selected > 0) Input::mouse_mappings["info_enter"] = {y + height - 1, mouse_x, 1, 6};
+ 				mouse_x += 8;
+-			if (width > 60) {
+-				out += title_left_down + Fx::b + hi_color + 't' + t_color + "erminate" + Fx::ub + title_right_down;
+-				if (selected > 0) Input::mouse_mappings["t"] = {y + height - 1, mouse_x, 1, 9};
+-				mouse_x += 11;
+-			}
+-			if (width > 55) {
+-				out += title_left_down + Fx::b + hi_color + (vim_keys ? 'K' : 'k') + t_color + "ill" + Fx::ub + title_right_down;
+-				if (selected > 0) Input::mouse_mappings[vim_keys ? "K" : "k"] = {y + height - 1, mouse_x, 1, 4};
+-				mouse_x += 6;
+-			}
+-			out += title_left_down + Fx::b + hi_color + 's' + t_color + "ignals" + Fx::ub + title_right_down;
+-			if (selected > 0) Input::mouse_mappings["s"] = {y + height - 1, mouse_x, 1, 7};
+-		    mouse_x += 9;
+-		    out += title_left_down + Fx::b + hi_color + 'N' + t_color + "ice" + Fx::ub + title_right_down;
+-		    if (selected > 0) Input::mouse_mappings["N"] = {y + height -1, mouse_x, 1, 5};
+-			mouse_x += 6;
+ 			if (width > 72) {
+ 			    fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}",
+ 			    	title_left_down, follow_process ? Fx::b : "",
+--- a/src/btop_input.cpp
++++ b/src/btop_input.cpp
+@@ -217,7 +217,6 @@ namespace Input {
+ 			auto filtering = Config::getB("proc_filtering");
+ 			auto vim_keys = Config::getB("vim_keys");
+ 			auto help_key = (vim_keys ? "H" : "h");
+-			auto kill_key = (vim_keys ? "K" : "k");
+ 			//? Global input actions
+ 			if (not filtering) {
+ 				bool keep_going = false;
+@@ -499,24 +498,6 @@ namespace Input {
+ 						no_update = false;
+ 					}
+ 				}
+-				else if (is_in(key, "t", kill_key) and (Config::getB("show_detailed") or Config::getI("selected_pid") > 0)) {
+-					atomic_wait(Runner::active);
+-					if (Config::getB("show_detailed") and Config::getI("proc_selected") == 0 and Proc::detailed.status == "Dead") return;
+-					Menu::show(Menu::Menus::SignalSend, (key == "t" ? SIGTERM : SIGKILL));
+-					return;
+-				}
+-				else if (key == "s" and (Config::getB("show_detailed") or Config::getI("selected_pid") > 0)) {
+-					atomic_wait(Runner::active);
+-					if (Config::getB("show_detailed") and Config::getI("proc_selected") == 0 and Proc::detailed.status == "Dead") return;
+-					Menu::show(Menu::Menus::SignalChoose);
+-					return;
+-				}
+-				else if (key == "N" and (Config::getB("show_detailed") or Config::getI("selected_pid") > 0)) {
+-					atomic_wait(Runner::active);
+-				    if (Config::getB("show_detailed") and Config::getI("proc_selected") == 0 and Proc::detailed.status == "Dead") return;
+-				    Menu::show(Menu::Menus::Renice);
+-				    return;
+-			    }
+ 				else if (is_in(key, "up", "down", "page_up", "page_down", "home", "end") or (vim_keys and is_in(key, "j", "k", "g", "G"))) {
+ 					proc_mouse_scroll:
+ 					redraw = false;
+--- a/src/btop_menu.cpp
++++ b/src/btop_menu.cpp
+@@ -26,7 +26,6 @@ tab-size = 4
+ #include "btop_tools.hpp"
+ 
+ #include <errno.h>
+-#include <signal.h>
+ 
+ #include <array>
+ #include <cmath>
+@@ -55,79 +54,6 @@ namespace Menu {
+    bool redraw{true};
+    int currentMenu = -1;
+    msgBox messageBox;
+-   int signalToSend{};
+-   int signalKillRet{};
+-
+-   const array<string, 32> P_Signals = {
+-	   "0",
+-#ifdef __linux__
+-#if defined(__hppa__)
+-		"SIGHUP", "SIGINT", "SIGQUIT", "SIGILL",
+-		"SIGTRAP", "SIGABRT", "SIGSTKFLT", "SIGFPE",
+-		"SIGKILL", "SIGBUS", "SIGSEGV", "SIGXCPU",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "SIGUSR1",
+-		"SIGUSR2", "SIGCHLD", "SIGPWR", "SIGVTALRM",
+-		"SIGPROF", "SIGIO", "SIGWINCH", "SIGSTOP",
+-		"SIGTSTP", "SIGCONT", "SIGTTIN", "SIGTTOU",
+-		"SIGURG", "SIGXFSZ", "SIGSYS"
+-#elif defined(__mips__)
+-		"SIGHUP", "SIGINT", "SIGQUIT", "SIGILL",
+-		"SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+-		"SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "SIGUSR1",
+-		"SIGUSR2", "SIGCHLD", "SIGPWR", "SIGWINCH",
+-		"SIGURG", "SIGIO", "SIGSTOP", "SIGTSTP",
+-		"SIGCONT", "SIGTTIN", "SIGTTOU", "SIGVTALRM",
+-		"SIGPROF", "SIGXCPU", "SIGXFSZ"
+-#elif defined(__alpha__)
+-		"SIGHUP", "SIGINT", "SIGQUIT", "SIGILL",
+-		"SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+-		"SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "SIGURG",
+-		"SIGSTOP", "SIGTSTP", "SIGCONT", "SIGCHLD",
+-		"SIGTTIN", "SIGTTOU", "SIGIO", "SIGXCPU",
+-		"SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH",
+-		"SIGPWR", "SIGUSR1", "SIGUSR2"
+-#elif defined (__sparc__)
+-		"SIGHUP", "SIGINT", "SIGQUIT", "SIGILL",
+-		"SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+-		"SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "SIGURG",
+-		"SIGSTOP", "SIGTSTP", "SIGCONT", "SIGCHLD",
+-		"SIGTTIN", "SIGTTOU", "SIGIO", "SIGXCPU",
+-		"SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH",
+-		"SIGLOST", "SIGUSR1", "SIGUSR2"
+-#else
+-		"SIGHUP", "SIGINT",	"SIGQUIT",	"SIGILL",
+-		"SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE",
+-		"SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "SIGSTKFLT",
+-		"SIGCHLD", "SIGCONT", "SIGSTOP", "SIGTSTP",
+-		"SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU",
+-		"SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH",
+-		"SIGIO", "SIGPWR", "SIGSYS"
+-#endif
+-#elif defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__APPLE__)
+-		"SIGHUP", "SIGINT", "SIGQUIT", "SIGILL",
+-		"SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+-		"SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "SIGURG",
+-		"SIGSTOP", "SIGTSTP", "SIGCONT", "SIGCHLD",
+-		"SIGTTIN", "SIGTTOU", "SIGIO", "SIGXCPU",
+-		"SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH",
+-		"SIGINFO", "SIGUSR1", "SIGUSR2"
+-#else
+-		"SIGHUP", "SIGINT", "SIGQUIT", "SIGILL",
+-		"SIGTRAP", "SIGABRT", "7", "SIGFPE",
+-		"SIGKILL", "10", "SIGSEGV", "12",
+-		"SIGPIPE", "SIGALRM", "SIGTERM", "16",
+-		"17", "18", "19", "20",
+-		"21", "22", "23", "24",
+-		"25", "26", "27", "28",
+-		"29", "30", "31"
+-#endif
+-	};
+-
+   std::unordered_map<string, Input::Mouse_loc> mouse_mappings;
+ 
+    const array<array<string, 3>, 3> menu_normal = {
+@@ -208,10 +134,6 @@ namespace Menu {
+ 		{"E", "Collapse/expand all processes in tree view."},
+ 		{"%", "Toggles memory display mode in processes box."},
+ 		{"Selected +, -", "Expand/collapse the selected process in tree view."},
+-		{"Selected t", "Terminate selected process with SIGTERM - 15."},
+-		{"Selected k", "Kill selected process with SIGKILL - 9."},
+-		{"Selected s", "Select or enter signal to send to process."},
+-		{"Selected N", "Select new nice value for selected process."},
+ 		{"", " "},
+ 		{"", "For bug reporting and project updates, visit:"},
+ 		{"", "https://github.com/aristocratos/btop"},
+@@ -259,8 +181,8 @@ namespace Menu {
+ 				"Set to True to enable \"h,j,k,l\" keys for",
+ 				"directional control in lists.",
+ 				"",
+-				"Conflicting keys for",
+-				"h (help) and k (kill)",
++				"The conflicting key for",
++				"h (help)",
+ 				"is accessible while holding shift."},
+ 			{"disable_mouse",
+ 				"Disable all mouse events."},
+@@ -981,122 +903,6 @@ namespace Menu {
+ 		Switch
+ 	};
+ 
+-	static int signalChoose(const string& key) {
+-		static std::optional<int> s_pid;
+-		static int x{};
+-		static int y{};
+-		static int selected_signal = -1;
+-
+-		if (!s_pid) {
+-			s_pid = (Config::getB("show_detailed") and Config::getI("selected_pid") == 0 ? Config::getI("detailed_pid") : Config::getI("selected_pid"));
+-		}
+-
+-		if (bg.empty()) selected_signal = -1;
+-		auto& out = Global::overlay;
+-		int retval = Changed;
+-
+-		if (redraw) {
+-			x = Term::width/2 - 40;
+-			y = Term::height/2 - 9;
+-			bg = Draw::createBox(x + 2, y, 78, 19, Theme::c("hi_fg"), true, "signals");
+-			bg += Mv::to(y+2, x+3) + Theme::c("title") + Fx::b + cjust("Send signal to PID " + to_string(s_pid.value()) + " ("
+-				+ uresize((s_pid == Config::getI("detailed_pid") ? Proc::detailed.entry.name : Config::getS("selected_name")), 30) + ")", 76);
+-		}
+-		else if (is_in(key, "escape", "q")) {
+-			goto MenuClosing;
+-		}
+-		else if (key.starts_with("button_")) {
+-			if (int new_select = stoi(key.substr(7)); new_select == selected_signal)
+-				goto ChooseEntering;
+-			else
+-				selected_signal = new_select;
+-		}
+-		else if (is_in(key, "enter", "space") and selected_signal >= 0) {
+-			ChooseEntering:
+-			signalKillRet = 0;
+-			if (s_pid < 1) {
+-				signalKillRet = ESRCH;
+-				menuMask.set(SignalReturn);
+-			}
+-			else if (kill(s_pid.value(), selected_signal) != 0) {
+-				signalKillRet = errno;
+-				menuMask.set(SignalReturn);
+-			}
+-			goto MenuClosing;
+-		}
+-		else if (key.size() == 1 and isdigit(key.at(0)) and selected_signal < 10) {
+-			selected_signal = std::min(std::stoi((selected_signal < 1 ? key : to_string(selected_signal) + key)), 64);
+-		}
+-		else if (key == "backspace" and selected_signal != -1) {
+-			selected_signal = (selected_signal < 10 ? -1 : selected_signal / 10);
+-		}
+-		else if (is_in(key, "up", "k") and selected_signal != 16) {
+-			if (selected_signal == 1) selected_signal = 31;
+-			else if (selected_signal < 6) selected_signal += 25;
+-			else {
+-				bool offset = (selected_signal > 16);
+-				selected_signal -= 5;
+-				if (selected_signal <= 16 and offset) selected_signal--;
+-			}
+-		}
+-		else if (is_in(key, "down", "j")) {
+-			if (selected_signal == 31) selected_signal = 1;
+-			else if (selected_signal < 1 or selected_signal == 16) selected_signal = 1;
+-			else if (selected_signal > 26) selected_signal -= 25;
+-			else {
+-				bool offset = (selected_signal < 16);
+-				selected_signal += 5;
+-				if (selected_signal >= 16 and offset) selected_signal++;
+-				if (selected_signal > 31) selected_signal = 31;
+-			}
+-		}
+-		else if (is_in(key, "left", "h") and selected_signal > 0 and selected_signal != 16) {
+-			if (--selected_signal < 1) selected_signal = 31;
+-			else if (selected_signal == 16) selected_signal--;
+-		}
+-		else if (is_in(key, "right", "l") and selected_signal <= 31 and selected_signal != 16) {
+-			if (++selected_signal > 31) selected_signal = 1;
+-			else if (selected_signal == 16) selected_signal++;
+-		}
+-		else {
+-			retval = NoChange;
+-		}
+-
+-		if (retval == Changed) {
+-			int cy = y+4, cx = x+4;
+-			out = bg + Mv::to(cy++, x+3) + Theme::c("main_fg") + Fx::ub
+-				+ rjust("Enter signal number: ", 48) + Theme::c("hi_fg") + (selected_signal >= 0 ? to_string(selected_signal) : "") + Theme::c("main_fg") + Fx::bl + "█" + Fx::ubl;
+-
+-			auto sig_str = to_string(selected_signal);
+-			for (int count = 0, i = 0; const auto& sig : P_Signals) {
+-				if (count == 0 or count == 16) { count++; continue; }
+-				if (i++ % 5 == 0) { ++cy; cx = x+4; }
+-				out += Mv::to(cy, cx);
+-				if (count == selected_signal) out += Theme::c("selected_bg") + Theme::c("selected_fg") + Fx::b + ljust(to_string(count), 3) + ljust('(' + sig + ')', 12) + Fx::reset;
+-				else out += Theme::c("hi_fg") + ljust(to_string(count), 3) + Theme::c("main_fg") + ljust('(' + sig + ')', 12);
+-				if (redraw) mouse_mappings["button_" + to_string(count)] = {cy, cx, 1, 15};
+-				count++;
+-				cx += 15;
+-			}
+-
+-			cy++;
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust( "↑ ↓ ← →", 33, true) + Theme::c("main_fg") + Fx::ub + " | To choose signal.";
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust("0-9", 33) + Theme::c("main_fg") + Fx::ub + " | Enter manually.";
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust("ENTER", 33) + Theme::c("main_fg") + Fx::ub + " | To send signal.";
+-			mouse_mappings["enter"] = {cy, x, 1, 73};
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust("ESC or \"q\"", 33) + Theme::c("main_fg") + Fx::ub + " | To abort.";
+-			mouse_mappings["escape"] = {cy, x, 1, 73};
+-
+-			out += Fx::reset;
+-		}
+-
+-		return (redraw ? Changed : retval);
+-
+-		MenuClosing:
+-			s_pid.reset();
+-			return Closed;
+-	}
+-
+ 	static int sizeError(const string& key) {
+ 		if (redraw) {
+ 			vector<string> cont_vec {
+@@ -1119,86 +925,6 @@ namespace Menu {
+ 		return NoChange;
+ 	}
+ 
+-	static int signalSend(const string& key) {
+-		static std::optional<int> s_pid;
+-
+-		if (!s_pid) {
+-			s_pid = (Config::getB("show_detailed") and Config::getI("selected_pid") == 0 ? Config::getI("detailed_pid") : Config::getI("selected_pid"));
+-		}
+-
+-		if (redraw) {
+-			atomic_wait(Runner::active);
+-			auto& p_name = (s_pid == Config::getI("detailed_pid") ? Proc::detailed.entry.name : Config::getS("selected_name"));
+-			vector<string> cont_vec = {
+-				Fx::b + Theme::c("main_fg") + "Send signal: " + Fx::ub + Theme::c("hi_fg") + to_string(signalToSend)
+-				+ (signalToSend > 0 and signalToSend <= 32 ? Theme::c("main_fg") + " (" + P_Signals.at(signalToSend) + ')' : ""),
+-
+-				Fx::b + Theme::c("main_fg") + "To PID: " + Fx::ub + Theme::c("hi_fg") + to_string(s_pid.value()) + Theme::c("main_fg") + " ("
+-				+ uresize(p_name, 16) + ')' + Fx::reset,
+-			};
+-			messageBox = Menu::msgBox{50, 1, cont_vec, (signalToSend > 1 and signalToSend <= 32 and signalToSend != 17 ? P_Signals.at(signalToSend) : "signal")};
+-			Global::overlay = messageBox();
+-		}
+-		auto ret = messageBox.input(key);
+-		if (ret == msgBox::Ok_Yes) {
+-			signalKillRet = 0;
+-			if (kill(s_pid.value(), signalToSend) != 0) {
+-				signalKillRet = errno;
+-				menuMask.set(SignalReturn);
+-			}
+-			messageBox.clear();
+-			goto MenuClosing;
+-		}
+-		else if (ret == msgBox::No_Esc) {
+-			messageBox.clear();
+-			goto MenuClosing;
+-		}
+-		else if (ret == msgBox::Select) {
+-			Global::overlay = messageBox();
+-			return Changed;
+-		}
+-		else if (redraw) {
+-			return Changed;
+-		}
+-		return NoChange;
+-
+-		MenuClosing:
+-			s_pid.reset();
+-			return Closed;
+-	}
+-
+-	static int signalReturn(const string& key) {
+-		if (redraw) {
+-			vector<string> cont_vec;
+-			cont_vec.push_back(Fx::b + Theme::g("used")[100] + "Failure:" + Theme::c("main_fg") + Fx::ub);
+-			if (signalKillRet == EINVAL) {
+-				cont_vec.push_back("Unsupported signal!" + Fx::reset);
+-			}
+-			else if (signalKillRet == EPERM) {
+-				cont_vec.push_back("Insufficient permissions to send signal!" + Fx::reset);
+-			}
+-			else if (signalKillRet == ESRCH) {
+-				cont_vec.push_back("Process not found!" + Fx::reset);
+-			}
+-			else {
+-				cont_vec.push_back("Unknown error! (errno: " + to_string(signalKillRet) + ')' + Fx::reset);
+-			}
+-
+-			messageBox = Menu::msgBox{50, 0, cont_vec, "error"};
+-			Global::overlay = messageBox();
+-		}
+-
+-		auto ret = messageBox.input(key);
+-		if (ret == msgBox::Ok_Yes or ret == msgBox::No_Esc) {
+-			messageBox.clear();
+-			return Closed;
+-		}
+-		else if (redraw) {
+-			return Changed;
+-		}
+-		return NoChange;
+-	}
+-
+ 	static int mainMenu(const string& key) {
+ 		enum MenuItems { Options, Help, Quit };
+ 		static int y{};
+@@ -1725,111 +1451,11 @@ static int optionsMenu(const string& key) {
+ 		return (redraw ? Changed : retval);
+ 	}
+ 
+-	static int reniceMenu(const string& key) {
+-		static std::optional<int> s_pid;
+-		static int x{};
+-		static int y{};
+-		static int selected_nice = 0;
+-		static string nice_edit;
+-
+-		if (!s_pid) {
+-			s_pid = (Config::getB("show_detailed") and Config::getI("selected_pid") == 0 ? Config::getI("detailed_pid") : Config::getI("selected_pid"));
+-		}
+-
+-		if (bg.empty()) {
+-			selected_nice = 0;
+-			nice_edit.clear();
+-		}
+-		auto& out = Global::overlay;
+-		int retval = Changed;
+-
+-		if (redraw) {
+-			x = Term::width/2 - 25;
+-			y = Term::height/2 - 6;
+-			bg = Draw::createBox(x + 2, y, 50, 13, Theme::c("hi_fg"), true, "renice");
+-			bg += Mv::to(y+2, x+3) + Theme::c("title") + Fx::b + cjust("Renice PID " + to_string(s_pid.value()) + " ("
+-				+ uresize((s_pid == Config::getI("detailed_pid") ? Proc::detailed.entry.name : Config::getS("selected_name")), 15) + ")", 48);
+-		}
+-		else if (is_in(key, "escape", "q")) {
+-			goto MenuClosing;
+-		}
+-		else if (is_in(key, "enter", "space")) {
+-			if (s_pid > 0) {
+-				if (not nice_edit.empty()) {
+-					try {
+-						selected_nice = stoi(nice_edit);
+-					}
+-					catch (...) { selected_nice = 0; }
+-				}
+-				if (not Proc::set_priority(s_pid.value(), selected_nice)) {
+-					// TODO: show error message
+-				}
+-			}
+-			goto MenuClosing;
+-		}
+-		else if (key.size() == 1 and (isdigit(key.at(0)) or (key.at(0) == '-' and nice_edit.empty()))) {
+-			nice_edit += key;
+-		}
+-		else if (key == "backspace" and not nice_edit.empty()) {
+-			nice_edit.pop_back();
+-		}
+-		else if (is_in(key, "up", "k")) {
+-			if (++selected_nice > 19) selected_nice = -20;
+-			nice_edit.clear();
+-		}
+-		else if (is_in(key, "down", "j")) {
+-			if (--selected_nice < -20) selected_nice = 19;
+-			nice_edit.clear();
+-		}
+-		else if (is_in(key, "left", "h")) {
+-			if ((selected_nice -= 5) < -20) selected_nice += 40;
+-			nice_edit.clear();
+-		}
+-		else if (is_in(key, "right", "l")) {
+-			if ((selected_nice += 5) > 19) selected_nice -= 40;
+-			nice_edit.clear();
+-		}
+-		else {
+-			retval = NoChange;
+-		}
+-
+-		if (retval == Changed) {
+-			int cy = y+4;
+-			if (not nice_edit.empty()) {
+-				try {
+-					selected_nice = stoi(nice_edit);
+-				}
+-				catch (...) { selected_nice = 0; }
+-			}
+-			out = bg + Mv::to(cy++, x+3) + Theme::c("main_fg") + Fx::ub
+-				+ rjust("Enter nice value: ", 30) + Theme::c("hi_fg") + (nice_edit.empty() ? to_string(selected_nice) : nice_edit) + Theme::c("main_fg") + Fx::bl + "█" + Fx::ubl;
+-
+-			cy++;
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust( "↑ ↓", 20, true) + Theme::c("main_fg") + Fx::ub + " | To change value.";
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust( "← →", 20, true) + Theme::c("main_fg") + Fx::ub + " | To change value by 5.";
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust("0-9", 20) + Theme::c("main_fg") + Fx::ub + " | Enter manually.";
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust("ENTER", 20) + Theme::c("main_fg") + Fx::ub + " | To set nice value.";
+-			out += Mv::to(++cy, x+3) + Fx::b + Theme::c("hi_fg") + rjust("ESC or 'q'", 20) + Theme::c("main_fg") + Fx::ub + " | To abort.";
+-
+-			out += Fx::reset;
+-		}
+-
+-		return (redraw ? Changed : retval);
+-
+-		MenuClosing:
+-			s_pid.reset();
+-			return Closed;
+-	}
+-
+ 	//* Add menus here and update enum Menus in header
+ 	const auto menuFunc = vector{
+ 		ref(sizeError),
+-		ref(signalChoose),
+-		ref(signalSend),
+-		ref(signalReturn),
+ 		ref(optionsMenu),
+ 		ref(helpMenu),
+-		ref(reniceMenu),
+ 		ref(mainMenu),
+ 	};
+ 	bitset<8> menuMask;
+@@ -1851,7 +1477,7 @@ static int optionsMenu(const string& key) {
+ 		if (currentMenu < 0 or not menuMask.test(currentMenu)) {
+ 			Menu::active = true;
+ 			redraw = true;
+-			if (((menuMask.test(Main) or menuMask.test(Options) or menuMask.test(Help) or menuMask.test(SignalChoose))
++			if (((menuMask.test(Main) or menuMask.test(Options) or menuMask.test(Help))
+ 			and (Term::width < 80 or Term::height < 24))
+ 			or (Term::width < 50 or Term::height < 20)) {
+ 				menuMask.reset();
+@@ -1887,9 +1513,8 @@ static int optionsMenu(const string& key) {
+ 		}
+ 	}
+ 
+-	void show(int menu, int signal) {
++	void show(int menu) {
+ 		menuMask.set(menu);
+-		signalToSend = signal;
+ 		process();
+ 	}
+ }
+--- a/src/btop_menu.hpp
++++ b/src/btop_menu.hpp
+@@ -35,7 +35,6 @@ namespace Menu {
+ 
+ 	extern atomic<bool> active;
+ 	extern string output;
+-	extern int signalToSend;
+ 	extern bool redraw;
+ 
+ 	//? line, col, height, width
+@@ -81,12 +80,8 @@ namespace Menu {
+ 	//* Enum for functions in vector menuFuncs
+ 	enum Menus {
+ 		SizeError,
+-		SignalChoose,
+-		SignalSend,
+-		SignalReturn,
+ 		Options,
+ 		Help,
+-	    Renice,
+ 		Main
+ 	};
+ 
+@@ -94,6 +89,6 @@ namespace Menu {
+ 	void process(const std::string_view key = "");
+ 
+ 	//* Show a menu from enum Menu::Menus
+-	void show(int menu, int signal=-1);
++	void show(int menu);
+ 
+ }

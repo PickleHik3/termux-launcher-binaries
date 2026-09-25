@@ -67,6 +67,9 @@ struct Opts {
     motion_off: bool,
     /// A fake clock for the router (set before the first frame).
     clock: Option<Rc<Cell<Instant>>>,
+    /// The stub's `prefetch` reports every fixture asset (else it reports nothing, and every
+    /// asset is asked for on its own).
+    prefetch: bool,
 }
 
 impl Default for Opts {
@@ -80,6 +83,7 @@ impl Default for Opts {
             motion: None,
             motion_off: false,
             clock: None,
+            prefetch: false,
         }
     }
 }
@@ -96,6 +100,9 @@ impl H {
         }
         if o.gh == Gh::SignedIn {
             std::fs::write(dir.join("gh-signed-in"), "").unwrap();
+        }
+        if o.prefetch {
+            std::fs::write(dir.join("prefetch-lines"), "").unwrap();
         }
         let bin = dir.join("bin");
         let gh = if o.gh == Gh::Missing { dir.join("bin/no-such-gh") } else { bin.join("gh") };
@@ -210,7 +217,9 @@ impl H {
             let waiting_on_hold = held && r.st.job.as_ref().is_some_and(|j| j.running() && !j.cancelled);
             !r.st.tasks_pending() && (waiting_on_hold || !r.st.job_running())
         };
-        for _ in 0..6 {
+        // Each round may ask for one more thing (the README, then its first picture, then
+        // its decode, then the catalog picture's…), so a few rounds are needed.
+        for _ in 0..16 {
             self.pump(done);
             if done(self.router.as_ref().unwrap()) {
                 break;
@@ -403,9 +412,10 @@ fn header_follows_the_cursor_and_shows_the_facts() {
     go_to(&mut h, "kitten");
     assert_eq!(h.row(hdr.facts as usize).trim(), "installed 0.48.2 → 0.49 · GPL-3.0 · Kovid Goyal");
     let calls = h.log("calls.log");
-    assert!(calls.contains("list --tsv"), "{calls}");
-    assert!(calls.contains("update --check --tsv --offline"));
+    assert!(calls.lines().any(|l| l == "snapshot --tsv"), "{calls}");
+    assert!(!calls.contains("list --tsv") && !calls.contains("info --tsv"), "one snapshot, no per-item calls: {calls}");
     assert!(calls.lines().any(|l| l == "update --check --tsv"), "background refresh: {calls}");
+    assert!(calls.lines().any(|l| l == "prefetch"), "the prefetch runs once the snapshot is in: {calls}");
 }
 
 #[test]
@@ -626,10 +636,14 @@ fn fullscreen_calls_launcherctl_and_restores_on_exit() {
     let mut h = H::new(53, 26, Opts::default());
     assert!(h.has("f full"), "{}", h.text);
     h.key(Key::Char('f'));
+    assert!(h.r().st.fullscreen, "held at once; launcherctl runs in the background");
+    h.settle();
     assert_eq!(h.log("launcherctl.log"), "keyboard hide --hold\n");
     h.tap("f full");
+    h.settle();
     assert_eq!(h.log("launcherctl.log"), "keyboard hide --hold\nkeyboard show\n");
     h.key(Key::Char('f'));
+    h.settle();
     let dir = h.dir.clone();
     drop(h.router.take());
     let log = std::fs::read_to_string(dir.join("launcherctl.log")).unwrap();
@@ -1381,11 +1395,38 @@ fn hero_clip_plays_after_the_rest_and_is_freed_on_leave() {
     // Nothing more at rest.
     h.draw();
     assert_eq!(h.out, "");
-    // The cursor moves on: the clip's image goes, frames and all.
+    // The cursor moves on: the clip's placement goes, but the image stays in the terminal
+    // (frames and all), so coming back places it again instead of sending it again.
     h.key(Key::Down);
     assert_ne!(h.header_item(), "dawn");
-    assert!(h.out.contains(&format!("\x1b_Ga=d,d=I,i={pic_id},q=2\x1b\\")), "{:?}", h.out);
+    assert!(h.out.contains(&format!("\x1b_Ga=d,d=i,i={pic_id},p=1,q=2\x1b\\")), "{:?}", h.out);
+    assert!(!h.out.contains("d=I"), "{:?}", h.out);
     assert!(!h.renderer.pending());
+    h.key(Key::Up);
+    // Nothing to fetch or decode: the clip is cached, so the frame after the rest places it.
+    advance(&mut h, &clock, 200);
+    assert_eq!(header_picture_id(&mut h), pic_id, "the same clip, from the cache");
+    assert!(h.out.contains(&format!("\x1b_Ga=p,i={pic_id},p=1")), "placed again:\n{:?}", h.out);
+    assert!(!h.out.contains(&format!(",i={pic_id},q=2,o=z")), "not uploaded again:\n{:?}", h.out);
+    assert!(!h.renderer.pending(), "no frames to send again");
+}
+
+#[test]
+fn prefetch_lines_fill_the_store_without_asking_per_item() {
+    // The snapshot lands, the prefetch reports every asset, and nothing is asked for on its
+    // own: not the picture under the cursor, not an opened item's README.
+    let mut h = H::new(53, 26, Opts { caps: true, prefetch: true, ..Opts::default() });
+    let calls = h.log("calls.log");
+    assert!(calls.lines().any(|l| l == "prefetch"), "{calls}");
+    assert!(!calls.contains("picture "), "answered by the prefetch: {calls}");
+    assert!(h.r().scene.get(El::Picture).is_some_and(|e| e.picture.is_some()), "header picture:\n{}", h.text);
+    open_item(&mut h, "kitten");
+    assert!(h.has("kitten is kitty's companion"), "{}", h.text);
+    let calls = h.log("calls.log");
+    assert!(!calls.contains("readme kitten"), "the README came from the prefetch: {calls}");
+    // Without the lines, the picture under the cursor is asked for on its own.
+    let h = H::new(53, 26, Opts { caps: true, ..Opts::default() });
+    assert!(h.log("calls.log").contains("picture claude-code"), "{}", h.log("calls.log"));
 }
 
 #[test]

@@ -15,6 +15,7 @@ so they still point at the exact pinned commit, not upstream HEAD.
 | `sigye.md` | https://github.com/am2rican5/sigye/blob/f1a43ccdf621382fb1a4e652999ef7143c415b3f/README.md | `f1a43ccdf621382fb1a4e652999ef7143c415b3f` (tag `v0.6.0`) | MIT (per catalog) | plain `raw.githubusercontent.com` fetch 404'd for this repo; used `gh api repos/am2rican5/sigye/contents/README.md?ref=<sha>` base64 content instead |
 | `claude-code.md` | https://github.com/anthropics/claude-code/blob/d78be9481b889e11186ec4578b4f5e9301396e25/README.md | `d78be9481b889e11186ec4578b4f5e9301396e25` (default branch `main` HEAD, resolved 2026-09-24) | Proprietary (per catalog) | `gh api "repos/anthropics/claude-code/contents/README.md?ref=<sha>"` → `download_url` → `curl` |
 | `opencode.md` | https://github.com/anomalyco/opencode/blob/0f549842ee746e400b1f72516b0b2e292e267e2c/README.md | `0f549842ee746e400b1f72516b0b2e292e267e2c` (default branch `dev` HEAD, resolved 2026-09-24) | MIT (per catalog) | `gh api "repos/anomalyco/opencode/contents/README.md?ref=<sha>"` → `download_url` → `curl` |
+| `btop.md` | https://github.com/aristocratos/btop/blob/6e39144aaf5a6bc01b9f795010b0914431067183/README.md | `6e39144aaf5a6bc01b9f795010b0914431067183` (tag v1.4.7) | Apache-2.0 (per catalog) | `curl https://raw.githubusercontent.com/aristocratos/btop/6e39144aaf5a6bc01b9f795010b0914431067183/README.md` |
 
 Notes:
 - `claude-code` and `opencode` have no release tags to pin against, so this pins their default

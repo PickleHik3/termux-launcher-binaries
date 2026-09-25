@@ -170,7 +170,7 @@ impl View for Front {
         let cur = list.get(self.cursor).cloned();
         let name = cur.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         let (hdr, pic) = header_for(p, st, &name, body_need, false, true, true);
-        let info = if name.is_empty() { Info::default() } else { st.cat.info(&st.env, &name).clone() };
+        let info = if name.is_empty() { Info::default() } else { st.cat.info(&name).clone() };
         let state = st.job.as_ref().and_then(|j| {
             if j.running() && j.current.as_deref() == Some(name.as_str()) {
                 Some(j.verb.ing())
@@ -211,6 +211,7 @@ impl View for Front {
             let msg = match (&st.cat.error, self.filter) {
                 (Some(e), _) => e.clone(),
                 (None, true) => "Everything is up to date.".to_string(),
+                (None, false) if st.cat.loading => "Loading…".to_string(),
                 (None, false) => "Nothing here yet.".to_string(),
             };
             p.text_clip(El::Row(0), b.x, b.y, &msg, pal.dim_s().italic(), b.right());

@@ -14,6 +14,14 @@ NDK plus a sysroot assembled with `dpkg-deb -x`.
 | `build-dawn.sh` | patched dawn, the markdown writing pad | NDK + CMake |
 | `build-sigye.sh` | patched Sigye clock | rustup `aarch64-linux-android` + NDK |
 | `build-kitten.sh` | kitty's standalone `kitten` client | Go + python3 |
+| `build-btop.sh` | patched btop, fully static, for the launcher's Shizuku lane | NDK + GNU make |
+| `build-tl-priv.sh` | `tl-priv`, the lane's client (`tl-priv/tl-priv.c`), fully static | NDK |
+
+`btop` and `tl-priv` are edition-agnostic: both are linked `-static` against the NDK's Bionic
+`libc.a`, have no interpreter, no `NEEDED` entries and no prefix baked in. They have to be — the
+launcher copies `btop` to `/data/local/tmp/tl/bin/` and starts it as the shell uid with
+`PATH=/system/bin` and no Termux prefix in sight (`docs/maintainer/catalog.md`, "Privileged
+items"). One build of each serves every edition.
 
 `fastfetch` and `dawn` are built once per launcher edition — see below. If you only want the
 binaries, they are published for `aarch64` under `bin/` in this repository, per tag, and the
@@ -29,6 +37,8 @@ cd /some/scratch/dir
 /path/to/recipes/cross/build-dawn.sh
 /path/to/recipes/cross/build-sigye.sh
 /path/to/recipes/cross/build-kitten.sh
+/path/to/recipes/cross/build-btop.sh
+/path/to/recipes/cross/build-tl-priv.sh
 ```
 
 Each script honours `TL_NDK`, `TL_SYSROOT`, `TL_OUT` and `TL_BUILD_DIR`. Sources are pinned to the
@@ -152,6 +162,32 @@ Device-verified 2026-08-16 on Pong (A065, Android 16), running inside the launch
 - The `u` and `i` clipboard shortcuts shell out to `termux-clipboard-set`, which needs the
   `termux-api` package and the Termux:API add-on matching your edition. Without them Sigye keeps
   running and reports the clipboard as unavailable.
+
+**btop**
+
+- Runs only through the launcher's privileged lane (Shizuku running, Termux:Launcher granted);
+  `tl-priv` exits 127 with a one-line message otherwise.
+- The shell uid may look but not touch: kill, terminate, the signal menu and renice are removed by
+  `0002-btop-no-process-signals.patch` — keys, buttons, help text and all. Process listing, sorting,
+  filtering, the tree and the detail view stay.
+- Network counters come from `/proc/net/dev` whenever `/sys/class/net/*/statistics` is refused
+  (`0001`); the busiest-interface default and the `b`/`n` keys are untouched.
+- `/apex/*` loop mounts are hidden from the disks box and `/data` is shown right after `/`
+  (`0003`). GPU support is compiled out (upstream limits it to x86_64); battery, sensors and
+  per-process fields degrade on their own when a file is unreadable.
+- Bionic has no `pthread_cancel` or `pthread_timedjoin_np`; `0004` joins the runner thread with a
+  timeout on the way out and never cancels. A stalled runner (a rare upstream recovery path) is
+  abandoned rather than cancelled.
+- Built against API 29 for the `getloadavg()` declaration; the static link means it still runs on
+  the launcher's minimum Android.
+- A phone terminal (63×28) is too narrow for mem and net beside proc, so `0006` stacks the shown
+  boxes at full width whenever the terminal is narrower than the side-by-side layout needs, and
+  lets the cpu box go down to 44 columns (the clock, battery and container name in its title row
+  come back once it is 60 wide again). Stacked, the boxes need 8+8+6+7 rows for cpu, mem, net and
+  proc, so the Android default is `shown_boxes = "cpu mem proc"` (fits 28 rows with a 12-row
+  process list); all four fit from 29 rows, and `p` steps past presets that do not fit instead of
+  stopping at a size error. The process detail pane needs a proc box at least 16 rows tall. An
+  existing config file's `shown_boxes` and `presets` are honoured as before.
 
 **kitten**
 

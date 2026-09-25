@@ -168,6 +168,18 @@ while IFS=$'\t' read -r name kind version prefixes source target requires option
         pkg|binary|file|file-once|fisher|npm-musl|bundle) ;;
         *) echo "$name: unknown kind $kind" >&2; failed=1; continue ;;
     esac
+    # priv=shizuku means "a binary the launcher runs as the Shizuku shell user";
+    # the engine only honours it on a binary, so anything else is a mistake here.
+    case ";$options;" in
+        *";priv=shizuku;"*)
+            if [ "$kind" != binary ]; then
+                echo "$name: priv=shizuku is only for a binary, not a $kind" >&2
+                failed=1
+                continue
+            fi
+            ;;
+        *";priv="*) echo "$name: priv= must be shizuku" >&2; failed=1; continue ;;
+    esac
     case "$category" in
         -|"Note taking"|Tools|AI) ;;
         *) echo "$name: unknown category $category" >&2; failed=1; continue ;;

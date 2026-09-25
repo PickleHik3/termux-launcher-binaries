@@ -4,14 +4,14 @@
 use std::rc::Rc;
 
 use crate::layout;
-use crate::picture::Fit;
+use crate::picture::Lookup;
 use crate::render::{Rect, Sizing, Style, Underline};
 use crate::term::{Event, Key, MouseKind};
 
 use super::paint::{draw_header, HeaderContent, Masthead, Paint, Slot, Slots, A_BACK, A_CONTEXT};
 use super::readme::{self, Doc, Row, IMAGE_ROWS};
 use super::scene::El;
-use super::{header_for, installing::Installing, Gh, Go, Got, Readme, Store, Verb, View};
+use super::{header_for, installing::Installing, picture_in, Gh, Go, Got, Readme, Store, Verb, View};
 
 const A_LINK: u32 = 300;
 
@@ -89,7 +89,7 @@ impl View for ItemView {
         let pal = *p.f.pal();
         let cols = p.f.cols();
         let (cw, ch) = p.cell();
-        let info = st.cat.info(&st.env, &self.name).clone();
+        let info = st.cat.info(&self.name).clone();
         let setup = info.setup();
         let repo = info.upstream().map(str::to_string);
         let repo_url = repo.as_ref().map(|r| format!("https://github.com/{r}")).unwrap_or_default();
@@ -197,25 +197,33 @@ impl View for ItemView {
                             if !p.f.ctx.caps.kitty_graphics {
                                 continue;
                             }
-                            // Asked for only as it comes into view.
+                            // Asked for only as it comes into view; decoded by the worker,
+                            // with a stand-in row until it is here.
                             let got = if y <= ahead { st.asset_path(&self.name, src) } else { Got::Pending };
                             match got {
                                 Got::Ready(path) => {
                                     let box_w = b.w as u32 * cw as u32;
                                     let box_h = IMAGE_ROWS as u32 * ch as u32;
-                                    if let Ok(pic) = p.f.ctx.pics.file(&path, box_w, box_h, Fit::Contain) {
-                                        let off = box_w.saturating_sub(pic.width()) / 2;
-                                        let x_px = b.x as u32 * cw as u32 + off;
-                                        let pid = 1 + i as u32;
-                                        p.picture(
-                                            el,
-                                            &pic,
-                                            (x_px / cw as u32) as u16,
-                                            y,
-                                            (x_px % cw as u32, 0),
-                                            pid,
-                                        );
-                                        y += pic.height().div_ceil(ch as u32) as u16;
+                                    match picture_in(st, &mut p.f.ctx.pics, &path, box_w, box_h) {
+                                        Lookup::Have(pic) => {
+                                            let off = box_w.saturating_sub(pic.width()) / 2;
+                                            let x_px = b.x as u32 * cw as u32 + off;
+                                            let pid = 1 + i as u32;
+                                            p.picture(
+                                                el,
+                                                &pic,
+                                                (x_px / cw as u32) as u16,
+                                                y,
+                                                (x_px % cw as u32, 0),
+                                                pid,
+                                            );
+                                            y += pic.height().div_ceil(ch as u32) as u16;
+                                        }
+                                        Lookup::Missing => {
+                                            p.text(el, b.x, y, "[picture]", pal.dim_s());
+                                            y += 1;
+                                        }
+                                        Lookup::Failed => {}
                                     }
                                 }
                                 Got::Pending => {
@@ -262,7 +270,7 @@ impl View for ItemView {
     }
 
     fn keys(&self, st: &mut Store) -> Slots {
-        let info = st.cat.info(&st.env, &self.name).clone();
+        let info = st.cat.info(&self.name).clone();
         let setup = info.setup();
         let repo = info.upstream().map(str::to_string);
         let starred = repo.as_deref().and_then(|r| st.starred(r)) == Some(true) && st.gh == Gh::Ready;
@@ -285,7 +293,7 @@ impl View for ItemView {
 
     fn handle(&mut self, ev: &Event, st: &mut Store) -> Go {
         let page = self.view_h.saturating_sub(2).max(1) as i32;
-        let repo = st.cat.info(&st.env, &self.name).upstream().map(str::to_string);
+        let repo = st.cat.info(&self.name).upstream().map(str::to_string);
         match ev {
             Event::Key(Key::Up | Key::Char('k')) => self.scroll_by(-1),
             Event::Key(Key::Down | Key::Char('j')) => self.scroll_by(1),
