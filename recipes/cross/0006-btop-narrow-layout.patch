@@ -6,17 +6,17 @@
  		{"color_theme", "Default"},
 +	#ifdef __ANDROID__
 +		//? A phone terminal is about 63 columns by 28 rows. That is too narrow for mem and net beside
-+		//? proc, so the boxes stack, and 28 rows hold cpu, mem and a useful proc list but not all
-+		//? four (29 rows). All four are preset 0 for when the terminal is zoomed out; "p" steps past
-+		//? presets that do not fit. A config file that names shown_boxes or presets wins over these.
-+		{"shown_boxes", "cpu mem proc"},
-+	#else
++		//? proc, so the boxes stack, and 28 rows hold all four at their stacked minimums (cpu 8,
++		//? mem 7, net 6, proc 7). "p" steps past presets that do not fit. A config file that names
++		//? shown_boxes or presets wins over these.
  		{"shown_boxes", "cpu mem net proc"},
++	#else
++		{"shown_boxes", "cpu mem net proc"},
 +	#endif
  		{"graph_symbol", "braille"},
  		{"disable_presets", "Off"},
 +	#ifdef __ANDROID__
-+		{"presets", "cpu:0:default,mem:0:default,proc:0:default cpu:0:default,proc:0:default proc:0:default cpu:0:default,mem:0:default,net:0:default"},
++		{"presets", "cpu:0:default,mem:0:default,proc:0:default cpu:0:default,net:0:default,proc:0:default proc:0:default cpu:0:default,mem:0:default,net:0:default"},
 +	#else
  		{"presets", "cpu:1:default,proc:0:default cpu:0:default,mem:0:default,net:0:default cpu:0:block,net:0:tty"},
 +	#endif
@@ -82,16 +82,17 @@
  			bat_pos = bat_len = 0;
  		}
  
-@@ -1191,6 +1199,8 @@ namespace Gpu {
+@@ -1191,6 +1199,9 @@ namespace Gpu {
  namespace Mem {
  	int width_p = 45, height_p = 40;
  	int min_width = 36, min_height = 10;
-+	//? Stacked: 8 rows fit the total and the four memory lines, with disks beside them at full width
-+	int narrow_min_width = 36, narrow_min_height = 8;
++	//? Stacked: 7 rows fit the total and the used, available and cached lines, with disks beside
++	//? them at full width; one row fewer than that and a 63x28 phone could not show net as well
++	int narrow_min_width = 36, narrow_min_height = 7;
  	int x = 1, y, width = 20, height;
  	int mem_width, disks_width, divider, item_height, mem_size, mem_meter, graph_height, disk_meter;
  	int disks_io_h = 0;
-@@ -1457,6 +1467,8 @@ namespace Mem {
+@@ -1457,6 +1468,8 @@ namespace Mem {
  namespace Net {
  	int width_p = 45, height_p = 28;
  	int min_width = 36, min_height = 6;
@@ -100,7 +101,7 @@
  	int x = 1, y, width = 20, height;
  	int b_x, b_y, b_width, b_height, d_graph_height, u_graph_height;
  	bool shown = true, redraw = true;
-@@ -1572,6 +1584,8 @@ namespace Net {
+@@ -1572,6 +1585,8 @@ namespace Net {
  namespace Proc {
  	int width_p = 55, height_p = 68;
  	int min_width = 44, min_height = 16;
@@ -109,7 +110,7 @@
  	int x, y, width = 20, height;
  	int start, selected, select_max;
  	bool shown = true, redraw = true;
-@@ -2239,6 +2253,48 @@ namespace Draw {
+@@ -2239,6 +2254,48 @@ namespace Draw {
  		Net::shown = boxes.contains("net");
  		Proc::shown = boxes.contains("proc");
  
@@ -158,7 +159,7 @@
  		//* Calculate and draw cpu box outlines
  		if (Cpu::shown) {
  			using namespace Cpu;
-@@ -2250,6 +2306,13 @@ namespace Draw {
+@@ -2250,6 +2307,13 @@ namespace Draw {
  				: 0;
  		#endif
              const bool show_temp = (Config::getB("check_temp") and got_sensors);
@@ -172,7 +173,7 @@
  			width = round((double)Term::width * width_p / 100);
  		#ifdef GPU_SUPPORT
  			if (Gpu::shown != 0 and not (Mem::shown or Net::shown or Proc::shown)) {
-@@ -2263,6 +2326,7 @@ namespace Draw {
+@@ -2263,6 +2327,7 @@ namespace Draw {
  		#endif
  			x = 1;
  			y = cpu_bottom ? Term::height - height + 1 : 1;
@@ -180,7 +181,7 @@
  
  		#ifdef GPU_SUPPORT
  			b_columns = max(2, (int)ceil((double)(Shared::coreCount + 1) / (height - gpus_extra_height - 5)));
-@@ -2370,6 +2434,13 @@ namespace Draw {
+@@ -2370,6 +2435,13 @@ namespace Draw {
  			auto swap_disk = Config::getB("swap_disk");
  			auto mem_graphs = Config::getB("mem_graphs");
  
@@ -194,7 +195,7 @@
  			width = round((double)Term::width * (Proc::shown ? width_p : 100) / 100);
  		#ifdef GPU_SUPPORT
  			height = floor(static_cast<double>(Term::height) * (100 - Net::height_p * Net::shown*4 / ((Gpu::shown != 0 and Cpu::shown) + 4)) / 100) - Cpu::height - Gpu::total_height;
-@@ -2387,6 +2458,7 @@ namespace Draw {
+@@ -2387,6 +2459,7 @@ namespace Draw {
  			else
  				y = cpu_bottom ? 1 : Cpu::height + 1;
  		#endif
@@ -202,7 +203,7 @@
  
  			if (show_disks) {
  				mem_width = ceil((double)(width - 3) / 2);
-@@ -2434,6 +2506,13 @@ namespace Draw {
+@@ -2434,6 +2507,13 @@ namespace Draw {
  		//* Calculate and draw net box outlines
  		if (Net::shown) {
  			using namespace Net;
@@ -216,7 +217,7 @@
  			width = round((double)Term::width * (Proc::shown ? width_p : 100) / 100);
  		#ifdef GPU_SUPPORT
  			height = Term::height - Cpu::height - Gpu::total_height - Mem::height;
-@@ -2449,6 +2528,7 @@ namespace Draw {
+@@ -2449,6 +2529,7 @@ namespace Draw {
  			#endif
  			else
  				y = Term::height - height + 1 - (cpu_bottom ? Cpu::height : 0);
@@ -224,7 +225,7 @@
  
  			b_width = (width > 45) ? 27 : 19;
  			b_height = (height > 10) ? 9 : height - 2;
-@@ -2468,6 +2548,13 @@ namespace Draw {
+@@ -2468,6 +2549,13 @@ namespace Draw {
  		//* Calculate and draw proc box outlines
  		if (Proc::shown) {
  			using namespace Proc;
@@ -238,7 +239,7 @@
  			width = Term::width - (Mem::shown ? Mem::width : (Net::shown ? Net::width : 0));
  		#ifdef GPU_SUPPORT
  			height = Term::height - Cpu::height - Gpu::total_height;
-@@ -2480,6 +2567,14 @@ namespace Draw {
+@@ -2480,6 +2568,14 @@ namespace Draw {
  		#else
  			y = (cpu_bottom and Cpu::shown) ? 1 : Cpu::height + 1;
  		#endif
