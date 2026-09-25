@@ -24,6 +24,10 @@ on:
         description: "Release tag (empty: today's date, with -2, -3… if taken)"
         required: false
         default: ""
+      publish:
+        description: "Commit, tag and push (off: a dry run that stops after signing)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -92,6 +96,7 @@ jobs:
         run: scripts/release.sh "${{ steps.tag.outputs.tag }}" | tee "$RUNNER_TEMP/release.out"
 
       - name: Commit, tag, push
+        if: ${{ inputs.publish }}
         run: |
           tag="${{ steps.tag.outputs.tag }}"
           serial=$(sed -n 's/^#.*serial=\([0-9][0-9]*\).*$/\1/p' dist/catalog.tsv | head -1)
