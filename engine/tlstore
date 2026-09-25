@@ -368,13 +368,13 @@ load_item() {
     li_rest="$it_row$TAB"
     li_i=1
     while [ -n "$li_rest" ] && [ "$li_i" -le 30 ]; do
-        li_f="${li_rest%%$TAB*}"
-        li_rest="${li_rest#*$TAB}"
+        li_f="${li_rest%%"$TAB"*}"
+        li_rest="${li_rest#*"$TAB"}"
+        # shellcheck disable=SC2034  # it_prefixes is loaded for completeness; rows() did the matching
         case "$li_i" in
             1) it_name="$li_f" ;;
             2) it_kind="$li_f" ;;
             3) it_version="$li_f" ;;
-            # shellcheck disable=SC2034  # loaded for completeness; rows() did the matching
             4) it_prefixes="$li_f" ;;
             5) it_source="$li_f" ;;
             6) it_digest="$li_f" ;;
@@ -2210,15 +2210,15 @@ snapshot_cached() {
     while IFS= read -r sc_line; do
         case "$sc_line" in
             "check$TAB"*|"probe$TAB"*)
-                sc_kind="${sc_line%%$TAB*}"
-                sc_rest="${sc_line#*$TAB}"
-                sc_name="${sc_rest%%$TAB*}"
-                sc_rest="${sc_rest#*$TAB}"
-                sc_what="${sc_rest%%$TAB*}"
-                sc_rest="${sc_rest#*$TAB}"
+                sc_kind="${sc_line%%"$TAB"*}"
+                sc_rest="${sc_line#*"$TAB"}"
+                sc_name="${sc_rest%%"$TAB"*}"
+                sc_rest="${sc_rest#*"$TAB"}"
+                sc_what="${sc_rest%%"$TAB"*}"
+                sc_rest="${sc_rest#*"$TAB"}"
                 if [ "$sc_kind" = probe ]; then
-                    sc_url="${sc_rest%%$TAB*}"
-                    sc_ext="${sc_rest#*$TAB}"
+                    sc_url="${sc_rest%%"$TAB"*}"
+                    sc_ext="${sc_rest#*"$TAB"}"
                     sc_path="$CACHE_DIR/pictures/$(string_digest "$sc_url").$sc_ext"
                 else
                     sc_path="$sc_rest"
@@ -2396,19 +2396,19 @@ prefetch_gc() {
             }
         }')
     while IFS= read -r gc_line; do
-        gc_t="${gc_line%%$TAB*}"
-        gc_rest="${gc_line#*$TAB}"
+        gc_t="${gc_line%%"$TAB"*}"
+        gc_rest="${gc_line#*"$TAB"}"
         case "$gc_t" in
             pic) gc_pics="$gc_pics$gc_rest " ;;
             picurl)
-                gc_url="${gc_rest%%$TAB*}"
-                gc_ext="${gc_rest#*$TAB}"
+                gc_url="${gc_rest%%"$TAB"*}"
+                gc_ext="${gc_rest#*"$TAB"}"
                 gc_pics="$gc_pics$(string_digest "$gc_url").$gc_ext "
                 ;;
             pin) gc_pins="$gc_pins$gc_rest " ;;
             md) gc_mds="$gc_mds$gc_rest " ;;
             name) gc_names="$gc_names$gc_rest " ;;
-            sub) gc_subs="$gc_subs${gc_rest%%$TAB*}/${gc_rest#*$TAB} " ;;
+            sub) gc_subs="$gc_subs${gc_rest%%"$TAB"*}/${gc_rest#*"$TAB"} " ;;
         esac
     done <<EOF
 $gc_list

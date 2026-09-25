@@ -176,11 +176,11 @@ fi
 mkdir -p "$BIN_DIR" "$STORE_DIR" || { err "could not create $STORE_DIR"; exit 1; }
 
 ii_tmp="$BIN_DIR/.tlstore.$$.tmp"
-cp "$TMP/tlstore" "$ii_tmp" && chmod 755 "$ii_tmp" && mv -f "$ii_tmp" "$BIN_DIR/tlstore" || {
+if ! { cp "$TMP/tlstore" "$ii_tmp" && chmod 755 "$ii_tmp" && mv -f "$ii_tmp" "$BIN_DIR/tlstore"; }; then
     rm -f "$ii_tmp"
     err "could not write $BIN_DIR/tlstore"
     exit 1
-}
+fi
 
 for ii_alias in tl tls; do
     ii_path="$BIN_DIR/$ii_alias"
