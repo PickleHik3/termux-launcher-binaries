@@ -180,6 +180,14 @@ Device-verified 2026-08-16 on Pong (A065, Android 16), running inside the launch
   abandoned rather than cancelled.
 - Built against API 29 for the `getloadavg()` declaration; the static link means it still runs on
   the launcher's minimum Android.
+- A phone terminal (63×28) is too narrow for mem and net beside proc, so `0006` stacks the shown
+  boxes at full width whenever the terminal is narrower than the side-by-side layout needs, and
+  lets the cpu box go down to 44 columns (the clock, battery and container name in its title row
+  come back once it is 60 wide again). Stacked, the boxes need 8+8+6+7 rows for cpu, mem, net and
+  proc, so the Android default is `shown_boxes = "cpu mem proc"` (fits 28 rows with a 12-row
+  process list); all four fit from 29 rows, and `p` steps past presets that do not fit instead of
+  stopping at a size error. The process detail pane needs a proc box at least 16 rows tall. An
+  existing config file's `shown_boxes` and `presets` are honoured as before.
 
 **kitten**
 

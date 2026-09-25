@@ -17,6 +17,9 @@
 #   0004  Bionic has no pthread_cancel or pthread_timedjoin_np; join with a timeout, never cancel
 #   0005  probe paths with the non-throwing fs::exists, so a /sys file the shell uid may not stat
 #         reads as absent instead of ending btop; skip use_fstab when there is no /etc/fstab
+#   0006  stack the boxes at full width when the terminal is too narrow for mem/net beside proc (a
+#         phone is 63x28), let the cpu box go down to 44 columns, and default to "cpu mem proc" on
+#         Android with "p" stepping past presets that do not fit
 #
 # Requires: the Android NDK, GNU make, patch and git.
 set -euo pipefail
@@ -31,6 +34,7 @@ PATCHES=(
     "$SCRIPT_DIR/0003-btop-android-mounts.patch"
     "$SCRIPT_DIR/0004-btop-bionic-threads.patch"
     "$SCRIPT_DIR/0005-btop-no-throw-fs-probes.patch"
+    "$SCRIPT_DIR/0006-btop-narrow-layout.patch"
 )
 
 TL_NDK=${TL_NDK:-"$HOME/Android/Sdk/ndk/29.0.14206865"}
