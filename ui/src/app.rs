@@ -166,6 +166,10 @@ pub fn run(first: Box<dyn Screen>, opts: Options) -> io::Result<()> {
     let mut hits = HitMap::default();
     let mut taps = TapTracker::default();
     let mut out = String::with_capacity(64 * 1024);
+    // Bytes for the terminal that it has not taken yet (a picture upload is far more than
+    // a line's buffer holds): written a piece per pass, between events, never all at once.
+    let mut outq: Vec<u8> = Vec::with_capacity(256 * 1024);
+    let mut sent = 0usize;
     let mut pending: Vec<Event> = early;
     let mut dirty = true;
     let mut last_tick = Instant::now();
@@ -231,21 +235,29 @@ pub fn run(first: Box<dyn Screen>, opts: Options) -> io::Result<()> {
             let Frame { buf: cells, places, hits: new_hits, .. } = f;
             out.clear();
             renderer.render(&cells, &places, &mut out);
-            tty.write_all(out.as_bytes())?;
+            outq.extend_from_slice(out.as_bytes());
             hits = new_hits;
             dirty = false;
         }
-        // A header clip's frames go out one per pass, between events.
-        if renderer.pending() {
+        // A header clip's frames go out one per pass, between events, each once the bytes
+        // before it have left this process.
+        let drained = sent == outq.len();
+        if renderer.pending() && drained {
             out.clear();
             renderer.stream(&mut out);
-            if !out.is_empty() {
-                tty.write_all(out.as_bytes())?;
+            outq.extend_from_slice(out.as_bytes());
+        }
+        // The terminal takes what it can now; the rest waits for it to be writable.
+        if sent < outq.len() {
+            sent += tty.write_some(&outq[sent..])?;
+            if sent == outq.len() {
+                outq.clear();
+                sent = 0;
             }
         }
 
-        // Wait for input, a signal, a watched fd, the ESC timeout, the next frame or the next
-        // clip frame to send.
+        // Wait for input, a signal, a watched fd, the terminal taking more, the ESC timeout,
+        // the next frame or the next clip frame to send.
         let watched = top.watch();
         let mut timeout = if parser.pending() {
             Some(ESC_TIMEOUT)
@@ -254,10 +266,16 @@ pub fn run(first: Box<dyn Screen>, opts: Options) -> io::Result<()> {
         } else {
             None
         };
-        if renderer.pending() {
+        if renderer.pending() && sent == outq.len() {
             timeout = Some(timeout.map_or(STREAM_PACE, |t| t.min(STREAM_PACE)));
         }
         let mut fds: Vec<(RawFd, libc::c_short)> = vec![(tty.fd(), libc::POLLIN), (sig_r, libc::POLLIN)];
+        if sent < outq.len() {
+            if let Some(fd) = tty.out_fd() {
+                fds.push((fd, libc::POLLOUT));
+            }
+        }
+        let first_watched = fds.len();
         fds.extend(watched.iter().map(|&fd| (fd, libc::POLLIN)));
         let ready = term::poll_fds(&fds, timeout)?;
 
@@ -279,12 +297,17 @@ pub fn run(first: Box<dyn Screen>, opts: Options) -> io::Result<()> {
             parser.flush(&mut pending);
         }
         for (k, &fd) in watched.iter().enumerate() {
-            if ready[2 + k] {
+            if ready[first_watched + k] {
                 pending.push(Event::Readable(fd));
             }
         }
         // Replies arriving late (a slow probe answer) are not for screens.
         pending.retain(|e| !matches!(e, Event::Reply(_)));
+    }
+    // Whatever was on its way out goes whole before the terminal is restored, so no escape
+    // is cut in half.
+    if sent < outq.len() {
+        tty.write_all(&outq[sent..])?;
     }
     drop(tty);
     Ok(())

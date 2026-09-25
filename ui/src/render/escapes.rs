@@ -106,11 +106,26 @@ pub const KITTY_CHUNK: usize = 4096;
 /// `compress`, chunked. Quiet (`q=2`): the terminal sends no replies.
 pub fn kitty_transmit(out: &mut String, id: u32, width: u32, height: u32, rgba: &[u8], compress: bool) {
     let head = format!("a=t,f=32,s={width},v={height},i={id},q=2");
-    chunked(out, &head, rgba, compress, 6);
+    chunked(out, &head, rgba, compress, STILL_ZLIB_LEVEL);
 }
 
+/// As [`kitty_transmit`], with the payload already encoded ([`encode_payload`], so zlib +
+/// base64, `o=z`) by another thread: only the chunking happens here.
+pub fn kitty_transmit_encoded(out: &mut String, id: u32, width: u32, height: u32, payload: &str) {
+    let head = format!("a=t,f=32,s={width},v={height},i={id},q=2");
+    chunks(out, &head, payload, true);
+}
+
+/// zlib level for stills: uploaded once, so size over speed.
+pub const STILL_ZLIB_LEVEL: u8 = 6;
 /// zlib level for animation frames: they come in a burst, so speed over size.
-const FRAME_ZLIB_LEVEL: u8 = 1;
+pub const FRAME_ZLIB_LEVEL: u8 = 1;
+
+/// The payload of a transmit or frame as the terminal receives it: zlib at `level`, then
+/// base64. Done off the UI thread for anything large (a decode worker, the frame worker).
+pub fn encode_payload(data: &[u8], level: u8) -> String {
+    base64(&miniz_oxide::deflate::compress_to_vec_zlib(data, level))
+}
 
 /// Adds one animation frame to image `id` (`a=f`): the whole canvas again (`s`×`v`, straight
 /// RGBA), replacing the frame before it rather than blending (`X=1`), shown for `gap_ms`
@@ -130,6 +145,14 @@ pub fn kitty_frame(
     chunked(out, &head, rgba, compress, FRAME_ZLIB_LEVEL);
 }
 
+/// As [`kitty_frame`], with the frame already encoded ([`encode_payload`]) by the frame
+/// worker.
+pub fn kitty_frame_encoded(out: &mut String, id: u32, width: u32, height: u32, gap_ms: u32, payload: &str) {
+    let gap = gap_ms.max(1);
+    let head = format!("a=f,i={id},f=32,s={width},v={height},X=1,z={gap},q=2");
+    chunks(out, &head, payload, true);
+}
+
 /// Starts image `id` looping (`a=a`): frame 1, the picture itself, shows for `first_gap_ms`
 /// (`r=1,z=`), then the animation runs (`s=3`) round and round (`v=1`: for ever). Quiet.
 pub fn kitty_animate(out: &mut String, id: u32, first_gap_ms: u32) {
@@ -140,11 +163,13 @@ pub fn kitty_animate(out: &mut String, id: u32, first_gap_ms: u32) {
 /// Writes `head` plus the payload (`o=z` when `compress`, at zlib `level`) in
 /// [`KITTY_CHUNK`]-sized chunks: the first carries the head, the rest only `m`.
 fn chunked(out: &mut String, head: &str, data: &[u8], compress: bool, level: u8) {
-    let payload = if compress {
-        base64(&miniz_oxide::deflate::compress_to_vec_zlib(data, level))
-    } else {
-        base64(data)
-    };
+    let payload = if compress { encode_payload(data, level) } else { base64(data) };
+    chunks(out, head, &payload, compress);
+}
+
+/// Writes `head` plus an already base64-encoded `payload` (`o=z` when `compressed`) in
+/// [`KITTY_CHUNK`]-sized chunks.
+fn chunks(out: &mut String, head: &str, payload: &str, compress: bool) {
     let bytes = payload.as_bytes();
     let mut chunks = bytes.chunks(KITTY_CHUNK).peekable();
     let mut first = true;

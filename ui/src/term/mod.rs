@@ -18,6 +18,17 @@ pub trait TermIo {
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
     /// Reads what is available, waiting at most `timeout`. Returns 0 on timeout.
     fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+    /// Writes as much of `bytes` as the terminal takes without waiting; 0 when it would
+    /// block (the app loop then polls for `POLLOUT`). A terminal that cannot say writes it
+    /// all.
+    fn write_some(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+    /// The fd to poll for `POLLOUT` when [`TermIo::write_some`] fell short, if there is one.
+    fn out_fd(&self) -> Option<RawFd> {
+        None
+    }
 }
 
 /// Written on entry after the probe: alternate screen is already on.
@@ -112,6 +123,16 @@ impl Tty {
             return Err(io::Error::last_os_error());
         }
         RESTORED.store(false, Ordering::SeqCst);
+        if owned {
+            // Our own open file description: non-blocking, so a large picture upload is
+            // written a piece at a time between events (see `write_some`) and never holds
+            // the loop. A shared stdin/stdout is left as it was found.
+            // SAFETY: fcntl on a descriptor this process opened.
+            unsafe {
+                let fl = libc::fcntl(fd, libc::F_GETFL);
+                libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+            }
+        }
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             restore();
@@ -152,6 +173,30 @@ impl Tty {
 impl TermIo for Tty {
     fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
         write_fd(self.fd, bytes)
+    }
+    fn write_some(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        // A shared (blocking) terminal takes the whole write; the owned one is non-blocking
+        // and takes what fits in the line's buffer.
+        if !self.owned {
+            write_fd(self.fd, bytes)?;
+            return Ok(bytes.len());
+        }
+        // SAFETY: bytes points to valid memory of bytes.len() bytes.
+        let n = unsafe { libc::write(self.fd, bytes.as_ptr().cast(), bytes.len()) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            return match e.kind() {
+                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock => Ok(0),
+                _ => Err(e),
+            };
+        }
+        Ok(n as usize)
+    }
+    fn out_fd(&self) -> Option<RawFd> {
+        self.owned.then_some(self.fd)
     }
     fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
         let ready = poll_fds(&[(self.fd, libc::POLLIN)], Some(timeout))?;
