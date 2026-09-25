@@ -1,0 +1,203 @@
+# Builds the catalog's binaries on GitHub and publishes them as release assets, so nothing
+# built is ever committed into the repository. Run it from the Actions tab or
+# `gh workflow run build.yml -f tools=dawn,btop` (or `tools=all`). What it does:
+#
+#   plan     scripts/bins-plan.sh turns the tools input into a matrix: one job per tool, and
+#            per launcher edition for the tools whose binary carries an edition's prefix
+#   build    recipes/cross/build-asset.sh runs the tool's recipe on ubuntu-24.04 (the NDK from
+#            sdkmanager, Go and Rust as the runner has them, the edition's Termux sysroot from
+#            its own .deb repository, cached) and uploads the asset under its catalog name
+#   publish  one GitHub Release for the whole build, tag bins-YYYY.MM.DD[-N], marked prerelease
+#            so releases/latest keeps meaning the signed store release (release.yml); every
+#            asset is attached under its catalog name, plus a SHA256SUMS of them. Then
+#            scripts/bins-record.sh moves the rebuilt items to the new tag in
+#            scripts/items.tsv, replaces their SHA256SUMS lines, and the result is committed to
+#            main as github-actions[bot]. Tools that were not built keep their tag and digest.
+#
+# Phones only see a rebuilt tool as an update when its catalog version moves: bins-record.sh
+# bumps the build number of a `+<commit>.<N>` version on its own (dawn) and names, in the run
+# summary, any other item whose bytes changed but whose version did not — bump those by hand
+# (docs/maintainer/catalog.md, "Rebuilding a binary"). A store release (release.yml) is what
+# puts the new tag and digests into a signed catalog.
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: "Tools to build: all, or a comma list of btop, tl-priv, kitten, sigye, fastfetch, dawn, musl-loader, musl-runtime"
+        required: false
+        default: "all"
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: plan
+        run: |
+          matrix="$(scripts/bins-plan.sh "${{ inputs.tools }}")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      NDK_VERSION: "29.0.14206865"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build dpkg-dev make patch python3 file
+
+      - name: NDK
+        if: matrix.tool != 'kitten' && matrix.tool != 'musl-runtime'
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Go
+        if: matrix.tool == 'kitten'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Rust target
+        if: matrix.tool == 'sigye'
+        run: |
+          rustup update stable
+          rustup target add aarch64-linux-android
+
+      - name: Month
+        id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+      # The edition's Termux sysroot and the .deb files it came from. The repositories move,
+      # so the key rotates monthly; within a month a rebuild extracts from the cached .debs
+      # without touching the network.
+      - name: Cache the sysroot
+        if: matrix.tool == 'fastfetch' || matrix.tool == 'dawn'
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            work/sysroot-${{ matrix.edition }}
+            work/debs-${{ matrix.edition }}
+          key: sysroot-${{ matrix.tool }}-${{ matrix.edition }}-${{ hashFiles('recipes/cross/termux-sysroot.sh') }}-${{ steps.month.outputs.month }}
+
+      # kitty's dependency bundle and its generated Go sources: a built kitty is what the
+      # generator needs, and that is the slow part of the recipe.
+      - name: Cache the kitty tree
+        if: matrix.tool == 'kitten'
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: work/build-kitten-com.termux/source
+          key: kitten-${{ hashFiles('recipes/cross/build-kitten.sh') }}
+
+      - name: Build ${{ matrix.tool }} (${{ matrix.edition }})
+        run: |
+          mkdir -p work assets
+          TL_WORK="$PWD/work" TL_ASSETS="$PWD/assets" \
+            recipes/cross/build-asset.sh "${{ matrix.tool }}" "${{ matrix.edition }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bins-${{ matrix.tool }}-${{ matrix.edition }}
+          path: assets/*-aarch64
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    # Shares the store release's lane, so the two never race on SHA256SUMS or on pushing main.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: bins-*
+          merge-multiple: true
+          path: assets
+
+      - name: Tag
+        id: tag
+        run: |
+          base="bins-$(date -u +%Y.%m.%d)"
+          tag=$base; n=2
+          while git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; do
+            tag="$base-$n"; n=$((n + 1))
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $tag"
+          ls -l assets
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          (cd assets && sha256sum -- *-aarch64 > SHA256SUMS)
+          {
+            echo "Binaries for the tlstore catalog, built by \`.github/workflows/build.yml\` from \`recipes/cross\` at ${GITHUB_SHA} (tools: ${{ inputs.tools }})."
+            echo
+            echo "Not a store release — \`tlstore\` installs these by the digest its signed catalog pins; the signed script, catalog and store UI are on the latest non-prerelease. To reproduce a file, run \`recipes/cross/build-asset.sh <tool> [edition]\` at that commit."
+            echo
+            echo '```'
+            cat assets/SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+            --title "Binaries $tag" --notes-file notes.md \
+            assets/*-aarch64 assets/SHA256SUMS
+
+      - name: Record in SHA256SUMS and items.tsv, push
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          rm -f assets/SHA256SUMS
+          scripts/bins-record.sh "$tag" assets 2> record.err | tee record.out
+          cat record.err >&2
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add SHA256SUMS scripts/items.tsv
+          git commit -m "Build $tag: ${{ inputs.tools }} as release assets" \
+            -m "$(cat record.out)"
+          ok=0
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then ok=1; break; fi
+            sleep 10
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::could not push the record commit; run 'scripts/bins-record.sh $tag <assets dir>' locally and commit it"
+            exit 1
+          fi
+          {
+            echo "### $tag"
+            echo '```'
+            cat record.out
+            echo '```'
+            if [ -s record.err ]; then
+              echo "#### Needs a hand"
+              echo '```'
+              cat record.err
+              echo '```'
+            fi
+            echo "Cut a store release (release.yml) to put the new tag and digests into a signed catalog."
+          } >> "$GITHUB_STEP_SUMMARY"

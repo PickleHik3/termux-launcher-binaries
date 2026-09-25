@@ -20,8 +20,9 @@
 #
 # A binaries: source with a slash in its asset (e.g. binaries:readme/dawn.md@tag)
 # names a path in this repository directly, looked up in SHA256SUMS by that
-# exact repo-relative path; a bare asset (e.g. binaries:dawn@tag) keeps
-# looking itself up as "<asset>-aarch64", the per-processor binary it always was.
+# exact repo-relative path; a bare asset (e.g. binaries:dawn@tag) is looked up
+# as "<asset>-aarch64", the release asset .github/workflows/build.yml publishes
+# under that tag (scripts/bins-record.sh writes its SHA256SUMS line).
 #
 # A plain URL must name an immutable revision — a tag or a commit — for the same
 # reason a launcher: source does.

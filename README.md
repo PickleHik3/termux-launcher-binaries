@@ -6,12 +6,15 @@ the self-contained home of `tlstore`, the little package store
 [Termux Launcher](https://github.com/PickleHik3/termux-launcher) ships to install, list, update and
 remove the terminal tools and configs it shows off but does not ship inside the APK: the POSIX
 `sh` engine, the item catalog and its inputs, the Rust store UI, the release and maintainer
-scripts, this design documentation, and the prebuilt binaries the catalog installs by pinned
-digest.
+scripts, this design documentation, and the recipes for the prebuilt binaries the catalog installs
+by pinned digest. The binaries themselves are GitHub Release assets, built here by
+`.github/workflows/build.yml`; nothing built is committed.
 
-`dist/` is the one thing the launcher (or anyone else) actually consumes: a tagged, signed release
-set built from the sources below by `scripts/release.sh`. Nothing else in the launcher depends on
-this repository directly — it pins one tag's `dist/` and reads only that.
+`dist/` is what the launcher consumes: a tagged, signed release set built from the sources below
+by `scripts/release.sh`, committed at the tag for the launcher's gradle fetch and attached to the
+tag's GitHub Release for phones. The launcher pins one tag's `dist/` and reads only that; a phone
+reads `releases/latest/download/` to refresh its catalog and to keep `tlstore` and `tlstore-ui`
+current, whichever launcher version installed them.
 
 ## Sources vs. `dist/`
 
@@ -21,16 +24,30 @@ this repository directly — it pins one tag's `dist/` and reads only that.
 | `scripts/items.tsv`, `scripts/pictures/` | The catalog's hand-maintained item list and hero pictures | you, in an editor |
 | `ui/` | The Rust store UI crate (`tlstore-ui`) | `cargo`, via `scripts/build-ui.sh` |
 | `dist/` | `tlstore`, `tlstore.minisig`, `catalog.tsv`, `catalog.tsv.minisig`, `trusted.pub`, `tlstore-ui-arm64-v8a`, `tlstore-ui-x86_64` — the release set a tag ships | `scripts/release.sh <tag>` — never hand-edited |
+| `recipes/`, `SHA256SUMS`, `hero/`, `readme/` | How every binary is built; the digests of the published assets and of the pinned readmes and heroes; the small pinned files themselves | `.github/workflows/build.yml` publishes the binaries and writes their `SHA256SUMS` lines |
 
-See `docs/maintainer/catalog.md` for the full workflow (adding an item, cutting a release,
-changing the engine or the UI) and `AGENTS.md` for build/test commands.
+See `docs/maintainer/catalog.md` for the full workflow (adding an item, rebuilding a binary,
+cutting a release, changing the engine or the UI) and `AGENTS.md` for build/test commands.
 
 ## Release flow, in short
+
+Two workflows on GitHub, no laptop needed:
+
+1. **`build.yml`** (`gh workflow run build.yml -f tools=all`, or a comma list) builds the named
+   tools from `recipes/cross` on a runner, publishes them as the assets of one prerelease tagged
+   `bins-YYYY.MM.DD[-N]`, and commits their `SHA256SUMS` lines and the moved `items.tsv` tags to
+   `main`.
+2. **`release.yml`** (`gh workflow run release.yml`) tests, rebuilds `tlstore-ui` if `ui/`
+   changed, builds and signs the catalog and the script, commits `dist/`, tags, and creates the
+   store's GitHub Release, marked latest, with `dist/` as its assets.
+
+The same thing by hand, for the store release:
 
 ```sh
 scripts/build-ui.sh --install         # only if ui/ changed
 scripts/release.sh <tag> --prepare    # copies engine/tlstore + trusted.pub into dist/, builds
-                                       # the catalog, checks tlstore-ui-<abi> freshness
+                                       # the catalog, checks tlstore-ui-<abi> freshness, writes
+                                       # the UI digests into dist/tlstore
 bash scripts/sign.sh                  # the developer runs this by hand — needs the passphrase
 scripts/release.sh <tag>              # verifies the signatures, updates SHA256SUMS, prints
                                        # the lock block (tag + one sha256 line per dist file)
@@ -39,52 +56,61 @@ scripts/release.sh <tag>              # verifies the signatures, updates SHA256S
 `release.sh` never tags or pushes; push a tag with the printed digests once you are ready, and the
 launcher pins that tag's `dist/` by those digests.
 
-## Prebuilt binaries in `bin/`
+## Prebuilt binaries, as release assets
 
-Prebuilt `aarch64` binaries for four terminal tools the launcher shows off but does not ship inside
-the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, the `dawn` writing pad and
-the `sigye` clock — plus the musl runtime that lets `tlstore` run Claude Code and opencode inside a
-Termux prefix.
+Prebuilt `aarch64` binaries for the terminal tools the launcher shows off but does not ship inside
+the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, the `dawn` writing pad, the
+`sigye` clock and `btop` with its `tl-priv` client — plus the musl runtime that lets `tlstore` run
+Claude Code and opencode inside a Termux prefix.
 
 They exist because building them on a phone ranges from slow to impossible — `kitten` in particular
 cannot practically be built in Termux at all, because kitty's generated Go sources come from a
 generator that needs a built kitty first.
 
-`tlstore` installs them from here, against a digest pinned in its catalog.
+Each lives at `https://github.com/PickleHik3/tlstore/releases/download/<bins-tag>/<asset>`, on
+the prerelease `.github/workflows/build.yml` made it in, and `tlstore` installs it from there
+against the digest its catalog pins: a bare `binaries:<asset>@<tag>` source in `scripts/items.tsv`
+resolves to exactly that URL with `-aarch64` appended, and its digest is the `<asset>-aarch64`
+line of `SHA256SUMS`.
 
-## What is here
+## What is published
 
-| File | Version | Source |
+| Asset | Version | Source |
 |---|---|---|
-| `bin/kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty `v0.48.2`](https://github.com/kovidgoyal/kitty/tree/v0.48.2) |
-| `bin/fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/termux/fastfetch/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
-| `bin/fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
-| `bin/dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/cross/0001`–`0005-dawn-*.patch` (clipboard, AI chat, editing, frame dedup, note context), for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
-| `bin/dawn-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
-| `bin/sigye-aarch64` | Sigye `v0.6.0` + `recipes/termux/sigye/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
-| `bin/musl-loader-aarch64` | musl `1.2.5` + `recipes/cross/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
-| `bin/musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
-| `bin/musl-libstdcxx-aarch64` | GCC `14.2.0` `libstdc++.so.6`, musl-linked, unmodified | [Alpine `libstdc++-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libstdc++) |
-| `bin/musl-libgcc-aarch64` | GCC `14.2.0` `libgcc_s.so.1`, musl-linked, unmodified | [Alpine `libgcc-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libgcc) |
+| `kitten-aarch64` | kitty `v0.48.2` (`2cb1d95c`), unmodified | [kovidgoyal/kitty `v0.48.2`](https://github.com/kovidgoyal/kitty/tree/v0.48.2) |
+| `fastfetch-aarch64` | Fastfetch `v2.67.0` + `recipes/termux/fastfetch/0001-kitty-animation.patch`, for the `com.termux` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
+| `fastfetch-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [fastfetch-cli/fastfetch `9c7cfb86`](https://github.com/fastfetch-cli/fastfetch/tree/9c7cfb864ff9154ffe951fae191c14d60bb91544) |
+| `dawn-aarch64` | dawn `0.1.3+0e958747` + `recipes/cross/0001`–`0005-dawn-*.patch` (clipboard, AI chat, editing, frame dedup, note context), for the `com.termux` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
+| `dawn-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [andrewmd5/dawn `0e958747`](https://github.com/andrewmd5/dawn/tree/0e9587477463ece157ef7eea66c9e34bc5c7737a) |
+| `sigye-aarch64` | Sigye `v0.6.0` + `recipes/termux/sigye/0001-termux-clipboard.patch` | [am2rican5/sigye `0f0b8caa`](https://github.com/am2rican5/sigye/tree/0f0b8caaccb4ca01ab5d1fad1237c4a01a49766f) |
+| `btop-aarch64` | btop `v1.4.7` + `recipes/cross/0001`–`0006-btop-*.patch`, fully static | [aristocratos/btop `6e39144a`](https://github.com/aristocratos/btop/tree/6e39144aaf5a6bc01b9f795010b0914431067183) |
+| `tl-priv-aarch64` | `recipes/cross/tl-priv/tl-priv.c`, fully static | this repository |
+| `musl-loader-aarch64` | musl `1.2.5` + `recipes/cross/0001-musl-ld-preload-var.patch` + prefix paths, for the `com.termux` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
+| `musl-loader-io.vaj.tl-aarch64` | the same build, for the `io.vaj.tl` prefix | [musl-1.2.5.tar.gz](https://musl.libc.org/releases/musl-1.2.5.tar.gz) |
+| `musl-libstdcxx-aarch64` | GCC `14.2.0` `libstdc++.so.6`, musl-linked, unmodified | [Alpine `libstdc++-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libstdc++) |
+| `musl-libgcc-aarch64` | GCC `14.2.0` `libgcc_s.so.1`, musl-linked, unmodified | [Alpine `libgcc-14.2.0-r6`](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/libgcc) |
 
-Fastfetch and dawn are here twice because each resolves a library through a path fixed at link
-time, so one build per install prefix is needed; `kitten` and `sigye` are prefix-independent and
-serve every edition. `tlstore` reads `$PREFIX` and installs the right one.
+Fastfetch, dawn and the musl loader are published twice because each carries a path fixed at build
+time (a `RUNPATH`, or the resolver files under the prefix), so one build per install prefix is
+needed; the rest are prefix-independent and serve every edition. `tlstore` reads `$PREFIX` and
+installs the right one. Which tag each item is installed from is in `scripts/items.tsv`; the
+tags differ per tool, since a build only republishes the tools it was asked for.
 
 The last two are not built here and not patched: they are GCC's runtime libraries as Alpine
 packages them, taken out with `recipes/cross/fetch-musl-runtime.sh` against a pinned digest. They exist
 because a binary built for musl elsewhere wants musl's C++ library, and Termux's is a Bionic one the
 musl loader cannot load.
 
-`SHA256SUMS` covers all ten. `tlstore` verifies the digest its catalog pins before installing
-anything, so a tampered file is refused rather than run.
+`SHA256SUMS` covers every asset the catalog points at. `tlstore` verifies the digest its catalog
+pins before installing anything, so a tampered file is refused rather than run.
 
 Two more directories pin content the Item page shows, so the phone never depends on upstream
 HEAD: `readme/<name>.md` is each upstream project's own README, fetched verbatim at the commit
 this repository's tag pins (see `readme/SOURCES.md`), and `hero/<name>.png` is a short APNG made
 from that project's own demo GIF for the items that have one (see `hero/SOURCES.md`). `tlstore`
 resolves both through the catalog's `readme`/`readme-digest`/`demo-digest` columns and the
-`binaries:<path>@<tag>` source form, the same way it resolves the binaries in `bin/`.
+`binaries:<path>@<tag>` source form — a path with a slash is read raw from this repository at
+that tag, where a bare asset name is a release asset.
 
 ## Installing
 
@@ -99,10 +125,11 @@ bootstrap reinstall deletes whole and which APT owns the name `fastfetch` in:
 
 ```sh
 mkdir -p ~/.local/bin
+tag=$(sed -n 's/^kitten\t.*binaries:kitten@\([^\t]*\)\t.*/\1/p' scripts/items.tsv)   # its bins-… tag
 curl -fsSLo ~/.local/bin/kitten \
-  https://raw.githubusercontent.com/PickleHik3/tlstore/main/bin/kitten-aarch64
+  "https://github.com/PickleHik3/tlstore/releases/download/$tag/kitten-aarch64"
 chmod +x ~/.local/bin/kitten
-sha256sum ~/.local/bin/kitten     # compare against SHA256SUMS
+sha256sum ~/.local/bin/kitten     # compare against the kitten-aarch64 line of SHA256SUMS
 ```
 
 Make sure `~/.local/bin` comes before `$PREFIX/bin` in `PATH`, or the APT `fastfetch` wins.

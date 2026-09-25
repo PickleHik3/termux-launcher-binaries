@@ -43,7 +43,7 @@ Columns:
 | `kind` | `pkg` \| `binary` \| `file` \| `file-once` \| `script` \| `npm-musl` \| `bundle` |
 | `version` | `-` for pkg/bundle; upstream version for binary/file/script; `latest` or pinned for npm-musl |
 | `prefixes` | `*` or comma list of app packages (`com.termux`, `io.vaj.tl`, `com.termux.launcher.nix`) |
-| `source` | `pkg`: space-separated package names. `binary`/`file`/`file-once`/`script`: a URL, or `binaries:<asset>@<tag>` (→ `https://raw.githubusercontent.com/PickleHik3/tlstore/<tag>/bin/<asset>`) or `launcher:<path>@<tag>` (→ `https://raw.githubusercontent.com/PickleHik3/termux-launcher/<tag>/<path>`). `npm-musl`: `npm:<package>#<executable inside package/>`. `bundle`: `-` |
+| `source` | `pkg`: space-separated package names. `binary`/`file`/`file-once`/`script`: a URL, or `binaries:<asset>@<tag>` (→ `https://github.com/PickleHik3/tlstore/releases/download/<tag>/<asset>-aarch64`, a release asset; with a slash in the asset, `binaries:<path>@<tag>` → `https://raw.githubusercontent.com/PickleHik3/tlstore/<tag>/<path>`, a file in the repository) or `launcher:<path>@<tag>` (→ `https://raw.githubusercontent.com/PickleHik3/termux-launcher/<tag>/<path>`). `npm-musl`: `npm:<package>#<executable inside package/>`. `bundle`: `-` |
 | `digest` | sha256 hex of the downloaded file; `-` for pkg, bundle, npm-musl (npm's registry sha512 is the check) |
 | `target` | install path with `~`; `-` = default (`~/.local/bin/<name>` for binary, `~/.local/lib/tlstore/priv/<name>` for a binary with `priv=shizuku`, `~/.local/lib/<name>` for npm-musl, none for others) |
 | `requires` | comma list of catalog names installed first; bundle members live here |
@@ -70,8 +70,10 @@ Initial items: `fish`, `oh-my-posh`, `zoxide`, `eza`, `neovim`, `build-tools` (p
 
 - Baseline catalog = the one in the APK. Payload digests come from it; `pkg` goes through apt/pacman;
   `npm-musl` verifies the registry's `dist.integrity` sha512 over TLS.
-- Refresh: `https://raw.githubusercontent.com/PickleHik3/termux-launcher/main/app/src/main/assets/tlstore/catalog.tsv`
-  and `catalog.tsv.minisig`, verified with `minisign -V -p $PREFIX/libexec/termux-launcher/tlstore/trusted.pub`.
+- Refresh: `https://github.com/PickleHik3/tlstore/releases/latest/download/catalog.tsv`
+  and `catalog.tsv.minisig` (the assets of the store's latest GitHub Release; Revision 8 — before
+  that, the raw `dist/catalog.tsv` on `main`), verified with
+  `minisign -V -p $PREFIX/libexec/termux-launcher/tlstore/trusted.pub`.
   Accepted only when its serial is newer than the active one. No `minisign` → offer `pkg install
   minisign`; still none → refresh is off and the baseline is used, said in one line.
   `TLSTORE_CATALOG_URL` overrides the URL (tests use `file://`).
@@ -298,7 +300,8 @@ containing the raw base URL. When the launcher is already there (`TERM_PROGRAM=t
 `-y`. Ends with the doctor line and
 `tlstore browse`'s name.
 
-Self-update: on a standalone install (`.standalone` present, `.installed` absent) `tlstore update`
+Self-update (as first designed here; Revision 8 changes it): on a standalone install
+(`.standalone` present, `.installed` absent) `tlstore update`
 also fetches `tlstore` + `.minisig` from the recorded base, verifies, and replaces itself when the
 `TLSTORE_VERSION` line is newer — after the item work, and it re-executes nothing. On the launcher
 the app rewrites the script, so self-update is skipped. `sign-catalog.sh` becomes `sign.sh`:
@@ -453,3 +456,75 @@ write queue the loop drains as the terminal accepts them, with `POLLOUT` in the 
 clip streaming never blocks input. Up to three clips stay decoded, and up to three stay uploaded
 in the terminal after their placements go, so going back re-places a clip instead of sending it
 again. Nothing is asked for before an item has rested 150 ms under the cursor.
+
+## Revision 8 — binaries as release assets, a store that updates itself (tlstore 0.6)
+
+A launcher APK carrying an older `app/tlstore.lock` put engine 0.4 back under a 0.5 `tlstore-ui`
+and the store broke. The engine and the UI now move together, from this repository's own
+releases, whichever launcher version installed them; and the binaries the catalog installs are
+no longer committed.
+
+### Binaries as release assets
+
+`bin/` is gone. `.github/workflows/build.yml` builds the tools of `recipes/cross` on a runner
+(`recipes/cross/build-asset.sh <tool> [edition]`, one job per tool and per launcher edition where
+the binary carries a prefix), publishes them as the assets of one GitHub Release tagged
+`bins-YYYY.MM.DD[-N]` — a **prerelease**, so `releases/latest` keeps meaning the store release —
+under their catalog names (`<tool>-aarch64`, `<tool>-<package>-aarch64`), and commits the record
+to `main` with `scripts/bins-record.sh`: the assets' `SHA256SUMS` lines replaced, and every
+`items.tsv` row with a bare `binaries:<asset>@<old tag>` source for a rebuilt asset moved to the
+new tag. Tools not in that run keep their tag and digest, so tags differ per tool.
+
+Resolution in the engine (`source_url`, and the awk `url_of` copies in `snapshot_rows` and
+`prefetch_gc`): a bare `binaries:<asset>@<tag>` is
+`$BINARIES_RELEASES/<tag>/<asset>-aarch64` (`https://github.com/PickleHik3/tlstore/releases/download`,
+`TLSTORE_BINARIES_RELEASES` in tests); a path with a slash stays
+`$BINARIES_RAW/<tag>/<path>`, a small file kept in git (`TLSTORE_BINARIES_RAW`). Digests still
+come from `SHA256SUMS` at `build-catalog.sh` time, bare assets by `<asset>-aarch64`.
+
+Update detection is by version: `update_items` and `snapshot_rows` compare the catalog's version
+with the installed one and nothing else. A rebuilt binary is therefore an update only when its
+version moves. `bins-record.sh` bumps the build number of a `+<commit>.<N>` version (dawn's
+`0.1.3+0e958747.3` → `.4`) when the asset's digest changed; a plain upstream version (btop
+`1.4.7`) is left alone and named on stderr and in the run summary for the maintainer to bump by
+hand (`docs/maintainer/catalog.md`, "Rebuilding a binary").
+
+### The store release
+
+`release.yml` still commits `dist/` and `SHA256SUMS` and tags — the launcher's gradle fetch reads
+`dist/` from the tag through raw URLs — and then creates the GitHub Release `<tag>`, marked
+latest, with `tlstore`, `tlstore.minisig`, `catalog.tsv`, `catalog.tsv.minisig`, `trusted.pub`,
+`tlstore-ui-arm64-v8a` and `tlstore-ui-x86_64` as its assets (`gh release create` with the
+workflow token; the dry-run `publish` input stops before the commit as before).
+
+Before signing, `release.sh --prepare` runs `scripts/embed-ui-digests.sh`: the engine carries two
+placeholder lines, `TLSTORE_UI_SHA256_arm64_v8a=` and `TLSTORE_UI_SHA256_x86_64=`, empty in the
+source and filled from `dist/tlstore-ui-<abi>` in `dist/tlstore`, so the signature over the
+script covers the digests of the UI built beside it. The second `release.sh` pass runs the same
+script with `--check` and refuses a `dist/tlstore` that names other bytes.
+
+### Self-update, under the launcher too
+
+`CATALOG_URL` defaults to `$RELEASE_BASE/catalog.tsv`, `RELEASE_BASE` being
+`https://github.com/PickleHik3/tlstore/releases/latest/download` (`TLSTORE_RELEASE_BASE` in tests);
+the serial and signature checks are unchanged. `self_update` no longer looks at `.standalone` or
+`.installed`: it fetches `$RELEASE_BASE/tlstore` and `.minisig`, verifies against `trusted.pub`,
+and goes on only when the new `TLSTORE_VERSION` is ahead. Where a `tlstore-ui` is in place
+(`$PREFIX/libexec/termux-launcher/tlstore/tlstore-ui`), the new script must name a digest for
+this processor's ABI (`uname -m`: `aarch64` → `arm64-v8a`, `x86_64` → `x86_64`), the matching
+`tlstore-ui-<abi>` is downloaded and checked against that signed digest, and both files are
+staged beside their targets and renamed into place — the script first, since an older UI reads a
+newer script's output (columns only ever land at the end) and the reverse is what broke. A UI that
+cannot be had, or does not match, keeps the old script too. The launcher's own record of the UI,
+`.tlstore-ui-sha256`, is rewritten with the new digest so the app keeps treating the file as its
+own. Nothing is re-executed. Without a UI in place (a standalone install on plain Termux) only
+the script moves.
+
+When: on `update` and on `update --check` (the refresh `tlstore-ui` runs when it starts, whose
+stderr it discards) — never `--offline`, and never inside a `--progress` stream, which carries the
+item lines alone. Under `--tsv` the self-update's one line of narration goes to stderr, so the
+machine output stays clean.
+
+The launcher's installer (`TlstoreInstaller`, in the launcher repository) is being changed
+separately so an APK never puts an older release back; nothing here depends on that beyond the
+`.tlstore-ui-sha256` record above.
