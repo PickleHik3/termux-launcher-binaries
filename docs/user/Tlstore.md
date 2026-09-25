@@ -192,7 +192,7 @@ Termux Launcher puts tlstore in place for you, but you do not need the launcher 
 plain Termux, one command installs it:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/PickleHik3/termux-launcher/main/scripts/tlstore/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/PickleHik3/tlstore/main/scripts/install.sh | sh
 ```
 
 It checks what it downloads before installing anything, and puts tlstore exactly where the
@@ -253,15 +253,18 @@ own package repository.
 
 ## For maintainers
 
-The catalog that `tlstore` reads (`app/src/main/assets/tlstore/catalog.tsv`) is generated — never
-hand-edit it. To add or change an item:
+The catalog that `tlstore` reads (`dist/catalog.tsv`, in the `PickleHik3/tlstore` repository) is
+generated — never hand-edit it. To add or change an item, see `docs/maintainer/catalog.md` in that
+repository for the full workflow; in short:
 
-1. Edit `scripts/tlstore/items.tsv`, the hand-maintained item list.
-2. Run `scripts/tlstore/build-catalog.sh <path to tlstore/SHA256SUMS>` to compute
-   digests, bump the serial, and write `catalog.tsv`. A plain `http(s)` source is downloaded once
-   to hash it, so that step needs the network; it must name a tag or a commit, never a branch.
-3. Run `scripts/tlstore/sign.sh` to sign it (it also signs the `tlstore` script itself).
-4. Commit `items.tsv`, `catalog.tsv`, `catalog.tsv.minisig` and `tlstore.minisig`.
+1. Edit `scripts/items.tsv`, the hand-maintained item list.
+2. Run `scripts/build-catalog.sh` to compute digests, bump the serial, and write
+   `dist/catalog.tsv`. A plain `http(s)` source is downloaded once to hash it, so that step needs
+   the network; it must name a tag or a commit, never a branch.
+3. Cut a release with `scripts/release.sh <tag>` (two passes: `--prepare`, then `bash
+   scripts/sign.sh` by hand, then the plain form) to sign `dist/catalog.tsv` and `dist/tlstore`
+   and record the new digests.
+4. Commit `items.tsv`; the tagged `dist/` and `SHA256SUMS` are what `release.sh` writes.
 
 Anything a user should not choose directly gets `hidden=1` in its options; anything needed only
 while installing goes in `build=`. A file in this repository is pinned to a tag or the commit that

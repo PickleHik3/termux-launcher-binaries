@@ -215,12 +215,12 @@ while a bare `binaries:<asset>@<tag>` keeps resolving to the per-processor
 in the binaries repository's `SHA256SUMS` by that exact repo-relative path; a bare asset keeps
 being looked up as `<asset>-aarch64`.
 
-`scripts/tlstore/make-hero.sh <video|gif> <out.png>` turns a short clip into the looping APNG a
+`scripts/make-hero.sh <video|gif> <out.png>` turns a short clip into the looping APNG a
 pinned hero picture is: 4 seconds, 12 fps, 600 px wide, full frames (ffmpeg's apng encoder has no
 delta/blend-region option to begin with, so nothing here relies on the partial-frame blend ops
 some APNG decoders do not support).
 
-See `docs/agents/tlstore-catalog.md`, "Pinning a readme or a hero picture", for the workflow:
+See `docs/maintainer/catalog.md`, "Pinning a readme or a hero picture", for the workflow:
 write the trimmed readme, make the hero, commit both to the binaries repository under
 `readme/<name>.md` / `hero/<name>.png` with a `SHA256SUMS` line each, point `items.tsv` at them,
 rebuild, test, sign.

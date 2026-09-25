@@ -29,4 +29,4 @@ Alternatives weighed, in the order they were considered:
 
 Consequences: the script gains machine-readable catalog fields and a progress stream for the UI to
 read; the launcher ships one more binary per ABI and gains a way for the store to put the in-app
-keyboard away. Design and build plan: `project-docs/tlstore/REVISION-5.md`.
+keyboard away. Design and build plan: `docs/REVISION-5.md`.

@@ -1,0 +1,72 @@
+# AGENTS.md
+
+This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; the local
+checkout at `~/Projects/termux-launcher/termux-launcher-binaries` keeps the old directory name) is
+the self-contained home of `tlstore`, Termux Launcher's package store: the engine, the catalog and
+its inputs, the Rust store UI, the release/maintainer scripts, the design docs, and the prebuilt
+binaries the catalog installs. `dist/` is the tagged, signed release set the launcher actually
+consumes — everything else here is a source for it.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `engine/tlstore`, `engine/trusted.pub` | The POSIX `sh` engine, and the maintainer's minisign public key. Edited by hand. |
+| `scripts/items.tsv`, `scripts/pictures/` | The catalog's hand-maintained item list and hero pictures. |
+| `scripts/*.sh` | Build, test, sign and release tooling — see below. |
+| `ui/` | The Rust store UI crate, `tlstore-ui`. |
+| `dist/` | `tlstore`, `tlstore.minisig`, `catalog.tsv`, `catalog.tsv.minisig`, `trusted.pub`, `tlstore-ui-arm64-v8a`, `tlstore-ui-x86_64` — the release set a tag ships. Never hand-edited; `scripts/release.sh` writes it. |
+| `bin/`, `hero/`, `readme/`, `recipes/`, `licenses/`, `SHA256SUMS` | The showcase binaries (kitten, fastfetch, dawn, sigye, the musl runtime) the catalog also installs, and the recipes that build them. |
+| `docs/` | Design docs: `SPEC.md` and `REVISION-5.md`/`REVISION-6.md` (engine and UI history and current design), `docs/maintainer/catalog.md` (the day-to-day workflow), `docs/user/Tlstore.md` (user-facing), `docs/adr/` (architecture decisions). |
+
+## Build and test commands
+
+```sh
+# Engine tests (POSIX sh, no framework) — run under sh, dash, busybox sh and bash --posix
+bash scripts/test.sh
+bash scripts/test-install.sh          # the standalone curl-pipe installer, same shells
+
+# Catalog: rebuild from scripts/items.tsv against this repo's own SHA256SUMS
+scripts/build-catalog.sh
+scripts/build-catalog.sh /path/to/SHA256SUMS   # only if you need a different one
+
+# UI crate (Rust) — from ui/
+cd ui && cargo test
+cargo run --features shot -- --shot 53x26 --screen item:<name> --out /tmp/item.png
+cargo run --features shot -- --shot-all --out /tmp/frames/
+
+# Rebuild the release UI binaries (needs the Android NDK; ANDROID_HOME defaults to
+# ~/Android/Sdk if ANDROID_NDK_HOME is unset) — run after any change under ui/
+ANDROID_HOME=~/Android/Sdk bash scripts/build-ui.sh --install
+
+# Release flow — see docs/maintainer/catalog.md for the full walkthrough
+scripts/release.sh <tag> --prepare    # copy sources into dist/, build the catalog, check
+                                       # dist/tlstore-ui-<abi> freshness (scripts/check-dist.sh)
+bash scripts/sign.sh                  # the developer runs this by hand — needs the passphrase
+scripts/release.sh <tag>              # verify signatures, update SHA256SUMS, print the lock block
+```
+
+`scripts/release.sh` never tags or pushes. Never generate or commit a signing key; the key at
+`~/.config/vaj-apt/tlstore-minisign.key` is the maintainer's alone.
+
+## Never run in an agent session
+
+- `bash scripts/sign.sh` — needs the developer's passphrase.
+- `scripts/release.sh <tag>` (the non-`--prepare` pass) — verifies signatures that must already
+  exist from a human-run `sign.sh`.
+- Never enable the `shot` cargo feature in a build meant to ship; it pulls in a bundled font and
+  is dev-only.
+
+## The launcher side
+
+The launcher (`PickleHik3/termux-launcher`) pins one tag of this repository's `dist/` by digest and
+consumes it read-only:
+
+- `TlstoreInstaller` (`app/src/main/java/com/termux/app/store/TlstoreInstaller.java`) writes
+  `dist/tlstore`, `dist/catalog.tsv`, `dist/trusted.pub` and the matching `dist/tlstore-ui-<abi>`
+  into `$PREFIX` on every launcher start.
+- `launcherctl` and the kitty graphics protocol implementation the store UI relies on (placements,
+  animated frames, OSC 66 sized text) live in the launcher's own terminal emulator, not here — see
+  `ui/CONTRACT.md` for exactly what tlstore-ui expects the terminal to support.
+- Nothing in the launcher builds, tests or signs any of this; that all happens in this repository,
+  and a release is consumed by tag.

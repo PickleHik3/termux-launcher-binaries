@@ -1,7 +1,47 @@
-# Termux Launcher binaries
+# tlstore
 
-Prebuilt `aarch64` binaries for four terminal tools that
-[Termux Launcher](https://github.com/PickleHik3/termux-launcher) shows off but does not ship inside
+This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; the local
+checkout at `~/Projects/termux-launcher/termux-launcher-binaries` keeps the old directory name) is
+the self-contained home of `tlstore`, the little package store
+[Termux Launcher](https://github.com/PickleHik3/termux-launcher) ships to install, list, update and
+remove the terminal tools and configs it shows off but does not ship inside the APK: the POSIX
+`sh` engine, the item catalog and its inputs, the Rust store UI, the release and maintainer
+scripts, this design documentation, and the prebuilt binaries the catalog installs by pinned
+digest.
+
+`dist/` is the one thing the launcher (or anyone else) actually consumes: a tagged, signed release
+set built from the sources below by `scripts/release.sh`. Nothing else in the launcher depends on
+this repository directly — it pins one tag's `dist/` and reads only that.
+
+## Sources vs. `dist/`
+
+| Directory | What | Built by |
+|---|---|---|
+| `engine/tlstore`, `engine/trusted.pub` | The POSIX `sh` engine and the maintainer's minisign public key — hand-edited sources | you, in an editor |
+| `scripts/items.tsv`, `scripts/pictures/` | The catalog's hand-maintained item list and hero pictures | you, in an editor |
+| `ui/` | The Rust store UI crate (`tlstore-ui`) | `cargo`, via `scripts/build-ui.sh` |
+| `dist/` | `tlstore`, `tlstore.minisig`, `catalog.tsv`, `catalog.tsv.minisig`, `trusted.pub`, `tlstore-ui-arm64-v8a`, `tlstore-ui-x86_64` — the release set a tag ships | `scripts/release.sh <tag>` — never hand-edited |
+
+See `docs/maintainer/catalog.md` for the full workflow (adding an item, cutting a release,
+changing the engine or the UI) and `AGENTS.md` for build/test commands.
+
+## Release flow, in short
+
+```sh
+scripts/build-ui.sh --install         # only if ui/ changed
+scripts/release.sh <tag> --prepare    # copies engine/tlstore + trusted.pub into dist/, builds
+                                       # the catalog, checks tlstore-ui-<abi> freshness
+bash scripts/sign.sh                  # the developer runs this by hand — needs the passphrase
+scripts/release.sh <tag>              # verifies the signatures, updates SHA256SUMS, prints
+                                       # the lock block (tag + one sha256 line per dist file)
+```
+
+`release.sh` never tags or pushes; push a tag with the printed digests once you are ready, and the
+launcher pins that tag's `dist/` by those digests.
+
+## Prebuilt binaries in `bin/`
+
+Prebuilt `aarch64` binaries for four terminal tools the launcher shows off but does not ship inside
 the APK: `kitten`, a Fastfetch patched to animate Kitty-protocol GIFs, the `dawn` writing pad and
 the `sigye` clock — plus the musl runtime that lets `tlstore` run Claude Code and opencode inside a
 Termux prefix.
@@ -10,8 +50,7 @@ They exist because building them on a phone ranges from slow to impossible — `
 cannot practically be built in Termux at all, because kitty's generated Go sources come from a
 generator that needs a built kitty first.
 
-`tlstore`, the launcher's little package store, installs them from here, against a digest pinned
-in its catalog. Nothing else in the launcher depends on this repository.
+`tlstore` installs them from here, against a digest pinned in its catalog.
 
 ## What is here
 
@@ -61,7 +100,7 @@ bootstrap reinstall deletes whole and which APT owns the name `fastfetch` in:
 ```sh
 mkdir -p ~/.local/bin
 curl -fsSLo ~/.local/bin/kitten \
-  https://raw.githubusercontent.com/PickleHik3/termux-launcher-binaries/main/bin/kitten-aarch64
+  https://raw.githubusercontent.com/PickleHik3/tlstore/main/bin/kitten-aarch64
 chmod +x ~/.local/bin/kitten
 sha256sum ~/.local/bin/kitten     # compare against SHA256SUMS
 ```
@@ -177,8 +216,7 @@ for p in 0001-dawn-termux-clipboard 0002-dawn-openai-bridge 0003-dawn-edit-tools
 
 `recipes/` holds the exact scripts these binaries were produced with, including the sysroot
 assembly and every flag. They need a Linux host with the Android NDK, Go, and rustup — no Docker
-and no `termux-packages` checkout. The same scripts live in the launcher repository under
-`recipes/cross/`.
+and no `termux-packages` checkout.
 
 If any source here becomes hard to obtain, open an issue and it will be provided.
 
@@ -199,7 +237,7 @@ at runtime; neither is linked into or redistributed with the binary here.
 
 These are convenience builds of other people's software. They carry no warranty, and bugs in them
 are this repository's problem, not upstream's — report them
-[here](https://github.com/PickleHik3/termux-launcher/issues).
+[here](https://github.com/PickleHik3/tlstore/issues).
 
 ## Recipes
 
