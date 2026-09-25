@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Signs app/src/main/assets/tlstore/catalog.tsv and app/src/main/assets/tlstore/tlstore
-# so tlstore (and scripts/tlstore/install.sh, the standalone installer) will accept
-# them. Both verify the signature against the trusted.pub they ship with — tlstore
-# then compares catalog serials, and install.sh takes the script unconditionally
-# once it is signed — so an unsigned file of either kind is ignored.
+# Signs dist/catalog.tsv and dist/tlstore so tlstore (and scripts/install.sh, the
+# standalone installer) will accept them. Both verify the signature against the
+# trusted.pub they ship with — tlstore then compares catalog serials, and
+# install.sh takes the script unconditionally once it is signed — so an unsigned
+# file of either kind is ignored.
 #
-#   scripts/tlstore/sign.sh [catalog.tsv] [tlstore]
+#   scripts/sign.sh [catalog.tsv] [tlstore]
 #
 # The signing key is the maintainer's and lives outside every checkout:
 # TLSTORE_SIGNING_KEY, default ~/.config/vaj-apt/tlstore-minisign.key. Do not
@@ -13,9 +13,9 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(cd "$here/../.." && pwd)"
-catalog="${1:-$repo/app/src/main/assets/tlstore/catalog.tsv}"
-script="${2:-$repo/app/src/main/assets/tlstore/tlstore}"
+repo="$(cd "$here/.." && pwd)"
+catalog="${1:-$repo/dist/catalog.tsv}"
+script="${2:-$repo/dist/tlstore}"
 key="${TLSTORE_SIGNING_KEY:-$HOME/.config/vaj-apt/tlstore-minisign.key}"
 
 [ -f "$catalog" ] || { echo "no catalog at $catalog — run build-catalog.sh first" >&2; exit 1; }

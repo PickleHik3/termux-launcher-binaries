@@ -4,7 +4,7 @@
 # way the launcher app does, so the two never fight over the files, and the
 # app takes the script over later if the launcher is installed.
 #
-#   curl -fsSL https://raw.githubusercontent.com/PickleHik3/termux-launcher/main/scripts/tlstore/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/PickleHik3/tlstore/main/scripts/install.sh | sh
 #
 # POSIX sh only (Termux's sh is dash): no locals, no arrays, no [[ ]].
 # Functions share one variable namespace — every helper prefixes its
@@ -133,8 +133,8 @@ fi
 # Fetch
 # ---------------------------------------------------------------------------
 
-BASE="${TLSTORE_RAW_BASE:-https://raw.githubusercontent.com/PickleHik3/termux-launcher/main}"
-ASSET_BASE="$BASE/app/src/main/assets/tlstore"
+BASE="${TLSTORE_RAW_BASE:-https://raw.githubusercontent.com/PickleHik3/tlstore/main}"
+ASSET_BASE="$BASE/dist"
 
 TMP="$(mktemp -d)" || { err "could not create a place to work"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT INT TERM

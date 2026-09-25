@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Host tests for app/src/main/assets/tlstore/tlstore. No framework: a sandbox
+# Host tests for dist/tlstore (source engine/tlstore). No framework: a sandbox
 # HOME, a fake prefix, a catalog whose sources are file:// URLs, and a list of
 # assertions. Nothing here touches the network, a device or the real HOME.
 #
-#   scripts/tlstore/test.sh [shell...]
+#   scripts/test.sh [shell...]
 #
 # With no arguments it runs the whole suite under every POSIX shell it can find
 # (sh, dash, busybox sh, bash --posix) — tlstore has to work under all of them,
 # and dash is what Termux's sh is. Name shells to run only those, e.g.
-#   scripts/tlstore/test.sh /bin/dash "/path/to/busybox sh"
+#   scripts/test.sh /bin/dash "/path/to/busybox sh"
 #
 # Two knobs let the suite exercise phone-only code paths on a Linux host, and
 # tlstore reads both by design:
@@ -49,8 +49,8 @@
 
 set -u
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TLSTORE="$repo/app/src/main/assets/tlstore/tlstore"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TLSTORE="$repo/engine/tlstore"
 [ -f "$TLSTORE" ] || { echo "missing $TLSTORE" >&2; exit 1; }
 
 PASS=0
@@ -1086,7 +1086,7 @@ y
     if [ "$HAVE_MINISIGN" = 1 ]; then
         store="$TPREFIX/libexec/termux-launcher/tlstore"
         # Each base is the top of a repository, laid out the way this one is.
-        storepath="app/src/main/assets/tlstore"
+        storepath="dist"
         mkdir -p "$FX/selfnew/$storepath" "$FX/selfsame/$storepath" "$FX/selfbad/$storepath"
         sed 's/^TLSTORE_VERSION=.*/TLSTORE_VERSION=9.9/' "$TLSTORE" > "$FX/selfnew/$storepath/tlstore"
         printf '# the newer one\n' >> "$FX/selfnew/$storepath/tlstore"
@@ -1276,14 +1276,14 @@ echo
 # ---------------------------------------------------------------------------
 # Backward compatibility: a phone's already-installed tlstore against the new
 # catalog. New columns only ever land at the end (see the TSV contract in
-# project-docs/tlstore/REVISION-5.md; Revision 6 added readme-skip the same
+# docs/REVISION-5.md; Revision 6 added readme-skip the same
 # way), so the script already on dev, unchanged, must still read this
 # worktree's catalog shape.
 # ---------------------------------------------------------------------------
 
 echo "== the dev-branch tlstore reads the new catalog"
 OLD_TLSTORE="$(mktemp)"
-if git -C "$repo" show dev:app/src/main/assets/tlstore/tlstore > "$OLD_TLSTORE" 2>/dev/null; then
+if git -C "$repo" show dev:dist/tlstore > "$OLD_TLSTORE" 2>/dev/null; then
     SHELL_LABEL="dev-branch tlstore"
     build_fixture
     CATALOG_URL="file://$FX/newer.tsv"
@@ -1314,10 +1314,10 @@ echo
 echo "== build-catalog.sh"
 SHELL_LABEL=build-catalog
 BC_ROOT="$(mktemp -d)"
-mkdir -p "$BC_ROOT/scripts/tlstore/pictures" "$BC_ROOT/app/src/main/assets/tlstore"
-cp "$repo/scripts/tlstore/build-catalog.sh" "$BC_ROOT/scripts/tlstore/build-catalog.sh"
-printf 'a fake picture\n' > "$BC_ROOT/scripts/tlstore/pictures/demo.jpg"
-BC_PIC_DIGEST="$(sha "$BC_ROOT/scripts/tlstore/pictures/demo.jpg")"
+mkdir -p "$BC_ROOT/scripts/pictures" "$BC_ROOT/dist"
+cp "$repo/scripts/build-catalog.sh" "$BC_ROOT/scripts/build-catalog.sh"
+printf 'a fake picture\n' > "$BC_ROOT/scripts/pictures/demo.jpg"
+BC_PIC_DIGEST="$(sha "$BC_ROOT/scripts/pictures/demo.jpg")"
 BC_SUMS="$BC_ROOT/SHA256SUMS"
 # One bare asset (looked up as "<asset>-aarch64", as always) and one path
 # asset (a pinned readme, looked up by its exact repo-relative path — the
@@ -1327,16 +1327,16 @@ printf '3333333333333333333333333333333333333333333333333333333333333333  readme
 
 # bc_write_items <items.tsv path> <featured 0|1> <category>
 bc_write_items() {
-    printf 'demo\tbinary\t1\t*\tbinaries:demo@1.0\t-\t-\t-\tA demo item.\t%s\tdemo/demo\t0\ta demo item for testing\tShows a demo\tDoes another thing\tDoes one more thing\tdemo\t-\tDemo Author\tMIT\t-\tlauncher:scripts/tlstore/pictures/demo.jpg@abc123\t-\t%s\tPortability|Star history\tbinaries:readme/demo.md@1.0\n' \
+    printf 'demo\tbinary\t1\t*\tbinaries:demo@1.0\t-\t-\t-\tA demo item.\t%s\tdemo/demo\t0\ta demo item for testing\tShows a demo\tDoes another thing\tDoes one more thing\tdemo\t-\tDemo Author\tMIT\t-\tlauncher:scripts/pictures/demo.jpg@abc123\t-\t%s\tPortability|Star history\tbinaries:readme/demo.md@1.0\n' \
         "$3" "$2" > "$1"
     printf 'part\tpkg\t-\t*\tdemo-pkg\t-\t-\thidden=1\tA hidden part.\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t-\t-\n' >> "$1"
 }
 
-bc_items="$BC_ROOT/scripts/tlstore/items.tsv"
-bc_cat="$BC_ROOT/app/src/main/assets/tlstore/catalog.tsv"
+bc_items="$BC_ROOT/scripts/items.tsv"
+bc_cat="$BC_ROOT/dist/catalog.tsv"
 
 bc_write_items "$bc_items" 1 Tools
-OUT="$(cd "$BC_ROOT" && bash scripts/tlstore/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
+OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" = 0 ]; then pass; else fail "build-catalog.sh runs against a Revision 6 items.tsv" "$OUT"; fi
 if [ -f "$bc_cat" ]; then pass; else fail "it writes the catalog"; fi
 if awk -F'\t' 'NR==3 { exit (NF == 30 && $27 == "readme-skip" && $28 == "readme" && $29 == "readme-digest" && $30 == "demo-digest") ? 0 : 1 }' "$bc_cat"; then pass; else fail "the header row has 30 columns, readme/readme-digest/demo-digest last"; fi
@@ -1383,23 +1383,23 @@ else
 fi
 
 printf 'demo\tbinary\t1\t*\tbinaries:demo@1.0\t-\t-\t-\tA demo item.\tTools\n' > "$bc_items"
-OUT="$(cd "$BC_ROOT" && bash scripts/tlstore/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
+OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" != 0 ]; then pass; else fail "a row missing the Revision 5 columns is refused"; fi
 
 printf 'demo\tbinary\t1\t*\tbinaries:demo@1.0\t-\t-\t-\tA demo item.\tTools\tdemo/demo\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t1\n' > "$bc_items"
-OUT="$(cd "$BC_ROOT" && bash scripts/tlstore/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
+OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" != 0 ]; then pass; else fail "a Revision 5 row, without readme-skip, is refused"; fi
 
 printf 'demo\tbinary\t1\t*\tbinaries:demo@1.0\t-\t-\t-\tA demo item.\tTools\tdemo/demo\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t1\t-\n' > "$bc_items"
-OUT="$(cd "$BC_ROOT" && bash scripts/tlstore/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
+OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" != 0 ]; then pass; else fail "a Revision 6 row, without the pinned-content readme column, is refused"; fi
 
 bc_write_items "$bc_items" 1 Nonsense
-OUT="$(cd "$BC_ROOT" && bash scripts/tlstore/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
+OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" != 0 ]; then pass; else fail "an unknown category is refused"; fi
 
 bc_write_items "$bc_items" 0 Tools
-OUT="$(cd "$BC_ROOT" && bash scripts/tlstore/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
+OUT="$(cd "$BC_ROOT" && bash scripts/build-catalog.sh "$BC_SUMS" 2>&1)"; ST=$?
 if [ "$ST" != 0 ]; then pass; else fail "no item at all being featured is refused"; fi
 
 rm -rf "$BC_ROOT"
@@ -1501,8 +1501,8 @@ else
     SKIP=$((SKIP + 1))
 fi
 
-echo "== installer suite (scripts/tlstore/test-install.sh)"
-ti_out="$("$repo/scripts/tlstore/test-install.sh" "$@" 2>&1)"
+echo "== installer suite (scripts/test-install.sh)"
+ti_out="$("$repo/scripts/test-install.sh" "$@" 2>&1)"
 echo "$ti_out" | sed 's/^/   /' | tail -3
 ti_line="$(echo "$ti_out" | grep '^passed ' | tail -1)"
 if [ -n "$ti_line" ]; then
@@ -1516,7 +1516,7 @@ fi
 echo
 if command -v shellcheck >/dev/null 2>&1; then
     echo "== shellcheck -s sh"
-    if shellcheck -s sh "$TLSTORE" "$repo/scripts/tlstore/install.sh"; then
+    if shellcheck -s sh "$TLSTORE" "$repo/scripts/install.sh"; then
         echo "   clean"
     else
         FAIL=$((FAIL + 1))

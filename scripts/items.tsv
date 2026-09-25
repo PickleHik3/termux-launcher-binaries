@@ -1,5 +1,5 @@
 # tlstore items — hand-maintained. build-catalog.sh adds the digests and the
-# serial and writes app/src/main/assets/tlstore/catalog.tsv; never edit that file.
+# serial and writes dist/catalog.tsv; never edit that file.
 #
 # Tab separated, the catalog's columns minus the digest, picture-digest,
 # readme-digest and demo-digest columns (all computed by build-catalog.sh):
@@ -27,7 +27,7 @@
 #
 # tlstore-ui (Revision 5) reads the rest through `tlstore info --tsv`/`list
 # --tsv`; a part (hidden=1) leaves them all "-"/0. Rules for each field:
-# project-docs/tlstore/item-spread-rules.md.
+# docs/REVISION-6.md (Revision 5's item-spread-rules.md is retired by it).
 #   category    Note taking | Tools | AI | - (a part, or a setup with none)
 #   upstream    owner/repo the program comes from; - for a setup or a part
 #   setup       1 for the launcher's own arrangement (fish-shell), else 0

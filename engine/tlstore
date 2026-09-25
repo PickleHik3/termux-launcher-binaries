@@ -90,7 +90,7 @@ esac
 LAUNCHER_VERSION="${TERM_PROGRAM_VERSION:-}"
 [ "$HOST" = launcher ] || LAUNCHER_VERSION=""
 
-CATALOG_URL="${TLSTORE_CATALOG_URL:-https://raw.githubusercontent.com/PickleHik3/termux-launcher/main/app/src/main/assets/tlstore/catalog.tsv}"
+CATALOG_URL="${TLSTORE_CATALOG_URL:-https://raw.githubusercontent.com/PickleHik3/tlstore/main/dist/catalog.tsv}"
 NPM_REGISTRY="${TLSTORE_NPM_REGISTRY:-https://registry.npmjs.org}"
 PATCHELF="${TLSTORE_PATCHELF:-patchelf}"
 TLSTORE_UI_BIN="${TLSTORE_UI:-$STORE_DIR/tlstore-ui}"
@@ -109,8 +109,8 @@ RAW_BASE="${TLSTORE_RAW_BASE:-}"
 if [ -z "$RAW_BASE" ] && [ -f "$STANDALONE_MARK" ]; then
     RAW_BASE=$(head -1 "$STANDALONE_MARK" 2>/dev/null || true)
 fi
-[ -n "$RAW_BASE" ] || RAW_BASE="$LAUNCHER_RAW/main"
-STORE_PATH="app/src/main/assets/tlstore"
+[ -n "$RAW_BASE" ] || RAW_BASE="$BINARIES_RAW/main"
+STORE_PATH="dist"
 
 ASSUME_YES="${TLSTORE_ASSUME_YES:-0}"
 [ "$ASSUME_YES" = 1 ] || ASSUME_YES=0

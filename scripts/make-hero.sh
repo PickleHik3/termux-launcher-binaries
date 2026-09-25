@@ -2,7 +2,7 @@
 # Makes an animated APNG hero picture for a tlstore item's pinned readme, from
 # a short video or gif of it running.
 #
-#   scripts/tlstore/make-hero.sh <video|gif> <out.png>
+#   scripts/make-hero.sh <video|gif> <out.png>
 #
 # The clip is trimmed to its first 4 seconds, resampled to 12 fps and scaled
 # to 600 px wide (height kept even, aspect preserved), and written as an APNG
@@ -13,11 +13,11 @@
 # path do not support.
 #
 # The result is what a pinned `readme`/hero entry in items.tsv points a
-# `launcher:`/`binaries:` source at (see docs/agents/tlstore-catalog.md).
+# `launcher:`/`binaries:` source at (see docs/maintainer/catalog.md).
 set -euo pipefail
 
 if [ $# -ne 2 ]; then
-    echo "usage: scripts/tlstore/make-hero.sh <video|gif> <out.png>" >&2
+    echo "usage: scripts/make-hero.sh <video|gif> <out.png>" >&2
     exit 2
 fi
 

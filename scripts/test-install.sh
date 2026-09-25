@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Host tests for scripts/tlstore/install.sh, the standalone curl-pipe
+# Host tests for scripts/install.sh, the standalone curl-pipe
 # installer for official Termux. No framework: a sandbox HOME, a fake Termux
-# prefix, a file:// tree shaped like the repository (app/src/main/assets/
-# tlstore/...) signed with a throwaway minisign key, and a list of
+# prefix, a file:// tree shaped like the repository (dist/...) signed with a
+# throwaway minisign key, and a list of
 # assertions. Nothing here touches the network, a device or the real HOME.
 #
-#   scripts/tlstore/test-install.sh [shell...]
+#   scripts/test-install.sh [shell...]
 #
 # With no arguments it runs the whole suite under every POSIX shell it can
-# find (sh, dash, busybox sh, bash --posix), same as scripts/tlstore/test.sh.
+# find (sh, dash, busybox sh, bash --posix), same as scripts/test.sh.
 # Name shells to run only those.
 #
 # Two PATHs feed install.sh, built once in build_fixture:
@@ -28,8 +28,8 @@
 
 set -u
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INSTALL="$repo/scripts/tlstore/install.sh"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL="$repo/scripts/install.sh"
 [ -f "$INSTALL" ] || { echo "missing $INSTALL" >&2; exit 1; }
 
 PASS=0
@@ -54,7 +54,7 @@ skip() { SKIP=$((SKIP + 1)); echo "  SKIP  $1${2:+ — $2}"; }
 build_fixture() {
     ROOT="$(mktemp -d)"
     FX="$ROOT/fixtures"
-    ASSETDIR="$FX/app/src/main/assets/tlstore"
+    ASSETDIR="$FX/dist"
     HOME_DIR="$ROOT/home"
     TPREFIX="$ROOT/data/data/com.termux/files/usr"
     FIXBIN="$ROOT/bin"
@@ -66,7 +66,7 @@ build_fixture() {
     cat > "$ASSETDIR/tlstore" <<'EOF'
 #!/system/bin/sh
 # written by termux-launcher
-# tlstore fixture used by scripts/tlstore/test-install.sh
+# tlstore fixture used by scripts/test-install.sh
 TLSTORE_VERSION=0.1
 echo "fixture tlstore $*"
 EOF
@@ -98,13 +98,13 @@ EOF
         # A base whose tlstore no longer matches its signature: signed, then
         # the fetched bytes changed — the same shape as test.sh's tampered.tsv.
         mkdir -p "$ROOT/badscript"
-        cp -r "$FX/app" "$ROOT/badscript/app"
-        printf '\n# tampered after signing\n' >> "$ROOT/badscript/app/src/main/assets/tlstore/tlstore"
+        cp -r "$FX/dist" "$ROOT/badscript/dist"
+        printf '\n# tampered after signing\n' >> "$ROOT/badscript/dist/tlstore"
 
         # Same, for the catalog.
         mkdir -p "$ROOT/badcatalog"
-        cp -r "$FX/app" "$ROOT/badcatalog/app"
-        printf '# tampered after signing\n' >> "$ROOT/badcatalog/app/src/main/assets/tlstore/catalog.tsv"
+        cp -r "$FX/dist" "$ROOT/badcatalog/dist"
+        printf '# tampered after signing\n' >> "$ROOT/badcatalog/dist/catalog.tsv"
     fi
 
     # Fake package managers: log what they were asked for; only `pkg install
