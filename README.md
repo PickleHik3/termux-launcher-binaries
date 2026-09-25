@@ -1,7 +1,7 @@
 # tlstore
 
-This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; the local
-checkout at `~/Projects/termux-launcher/termux-launcher-binaries` keeps the old directory name) is
+This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; local
+checkout at `~/Projects/termux-launcher/tlstore`) is
 the self-contained home of `tlstore`, the little package store
 [Termux Launcher](https://github.com/PickleHik3/termux-launcher) ships to install, list, update and
 remove the terminal tools and configs it shows off but does not ship inside the APK: the POSIX

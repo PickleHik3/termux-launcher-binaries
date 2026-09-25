@@ -5,8 +5,8 @@ change reaches a phone. The user-facing side is `docs/user/Tlstore.md`; the desi
 screens is `docs/REVISION-6.md` (Revision 5 still describes the engine, the TSV contract and the
 progress stream).
 
-This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; the local
-checkout at `~/Projects/termux-launcher/termux-launcher-binaries` keeps the old directory name) is
+This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; local
+checkout at `~/Projects/termux-launcher/tlstore`) is
 the store's whole home: the engine source, the catalog inputs, the UI crate, the scripts and the
 docs live here together, and a `dist/` of built, signed release files is what a tag actually ships.
 The launcher (`PickleHik3/termux-launcher`) consumes a tagged `dist/` by pinned digest — nothing

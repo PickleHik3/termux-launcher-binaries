@@ -1,7 +1,7 @@
 # AGENTS.md
 
-This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; the local
-checkout at `~/Projects/termux-launcher/termux-launcher-binaries` keeps the old directory name) is
+This repository (`PickleHik3/tlstore`, renamed from termux-launcher-binaries 2026-09-24; local
+checkout at `~/Projects/termux-launcher/tlstore`) is
 the self-contained home of `tlstore`, Termux Launcher's package store: the engine, the catalog and
 its inputs, the Rust store UI, the release/maintainer scripts, the design docs, and the prebuilt
 binaries the catalog installs. `dist/` is the tagged, signed release set the launcher actually
