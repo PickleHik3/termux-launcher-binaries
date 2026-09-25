@@ -22,6 +22,7 @@ PATCHES=(
     "$SCRIPT_DIR/0002-dawn-openai-bridge.patch"
     "$SCRIPT_DIR/0003-dawn-edit-tools.patch"
     "$SCRIPT_DIR/0004-dawn-skip-unchanged-frames.patch"
+    "$SCRIPT_DIR/0005-dawn-note-context.patch"
 )
 
 TL_NDK=${TL_NDK:-"$HOME/android-sdk/ndk/27.2.12479018"}
@@ -103,6 +104,13 @@ if ! grep -qa '/chat/completions' "$TL_OUT/dawn"; then
 fi
 if ! grep -qa 'replace_selection' "$TL_OUT/dawn"; then
     echo "error: the edit tools are missing from the build — the chat could read but not edit" >&2
+    exit 1
+fi
+
+# TAI drops tools for most on-device models, so reading and editing the note must not need them:
+# the note rides on every question and a plain reply edits through tagged blocks.
+if ! grep -qa '<append_to_note>' "$TL_OUT/dawn"; then
+    echo "error: the note-context patch is missing — a tool-less model would not see the note" >&2
     exit 1
 fi
 
