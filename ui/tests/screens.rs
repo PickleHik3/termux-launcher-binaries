@@ -1403,8 +1403,8 @@ fn hero_clip_plays_after_the_rest_and_is_freed_on_leave() {
     assert!(!h.out.contains("d=I"), "{:?}", h.out);
     assert!(!h.renderer.pending());
     h.key(Key::Up);
+    // Nothing to fetch or decode: the clip is cached, so the frame after the rest places it.
     advance(&mut h, &clock, 200);
-    h.settle();
     assert_eq!(header_picture_id(&mut h), pic_id, "the same clip, from the cache");
     assert!(h.out.contains(&format!("\x1b_Ga=p,i={pic_id},p=1")), "placed again:\n{:?}", h.out);
     assert!(!h.out.contains(&format!(",i={pic_id},q=2,o=z")), "not uploaded again:\n{:?}", h.out);
