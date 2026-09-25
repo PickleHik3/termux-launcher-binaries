@@ -1318,6 +1318,16 @@ mkdir -p "$BC_ROOT/scripts/pictures" "$BC_ROOT/dist"
 cp "$repo/scripts/build-catalog.sh" "$BC_ROOT/scripts/build-catalog.sh"
 printf 'a fake picture\n' > "$BC_ROOT/scripts/pictures/demo.jpg"
 BC_PIC_DIGEST="$(sha "$BC_ROOT/scripts/pictures/demo.jpg")"
+# A launcher: source is hashed at its ref in a launcher checkout (TLSTORE_LAUNCHER_REPO): a
+# throwaway repo whose tag abc123 holds the picture.
+BC_LAUNCHER="$(mktemp -d)"
+mkdir -p "$BC_LAUNCHER/scripts/pictures"
+cp "$BC_ROOT/scripts/pictures/demo.jpg" "$BC_LAUNCHER/scripts/pictures/demo.jpg"
+git -C "$BC_LAUNCHER" init -q
+git -C "$BC_LAUNCHER" add -A
+git -C "$BC_LAUNCHER" -c user.name=t -c user.email=t@t commit -qm fixture
+git -C "$BC_LAUNCHER" tag abc123
+export TLSTORE_LAUNCHER_REPO="$BC_LAUNCHER"
 BC_SUMS="$BC_ROOT/SHA256SUMS"
 # One bare asset (looked up as "<asset>-aarch64", as always) and one path
 # asset (a pinned readme, looked up by its exact repo-relative path — the

@@ -26,7 +26,7 @@ for abi in arm64-v8a x86_64; do
         fail=1
         continue
     fi
-    got="$(grep -a -o "TLSTORE_UI_SRC_HASH=[0-9a-f]*" "$bin" | head -1 | cut -d= -f2)"
+    got="$(grep -a -o "TLSTORE_UI_SRC_HASH=[0-9a-f]\{64\}" "$bin" | head -1 | cut -d= -f2)"
     if [ -z "$got" ]; then
         echo "check-dist: $bin has no TLSTORE_UI_SRC_HASH baked in" >&2
         fail=1

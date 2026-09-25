@@ -4,8 +4,8 @@
 #   scripts/build-catalog.sh [path/to/SHA256SUMS]
 #
 # Digests are never hand-written: a launcher: source is hashed from the file
-# named at the `launcher:<path>@<ref>` this repository still resolves against
-# the launcher checkout (see engine/tlstore's `launcher:` handling — this
+# at `launcher:<path>@<ref>` in PickleHik3/termux-launcher (a local checkout
+# named by TLSTORE_LAUNCHER_REPO, else GitHub) (see engine/tlstore's `launcher:` handling — this
 # script only ever hashes a binaries:/launcher: source out of a SHA256SUMS or
 # the file itself), a binaries: source is looked up in the SHA256SUMS passed as
 # the first argument (this repository's own SHA256SUMS by default), and a
@@ -72,10 +72,24 @@ source_digest() {
     case "$source" in
         -) echo "-"; return 0 ;;
         launcher:*)
+            # A file in PickleHik3/termux-launcher, hashed at the ref the phone will fetch:
+            # from a local launcher checkout when TLSTORE_LAUNCHER_REPO names one and it has
+            # the ref, else from GitHub.
             path="${source#launcher:}"
+            local ref="${path##*@}"
             path="${path%@*}"
-            [ -f "$repo/$path" ] || { echo "no such file: $path (for $name)" >&2; return 1; }
-            sha256sum "$repo/$path" | cut -d' ' -f1
+            if [ -n "${TLSTORE_LAUNCHER_REPO:-}" ] \
+                && git -C "$TLSTORE_LAUNCHER_REPO" cat-file -e "$ref:$path" 2>/dev/null; then
+                git -C "$TLSTORE_LAUNCHER_REPO" show "$ref:$path" | sha256sum | cut -d' ' -f1
+            else
+                local out="$fetched/$name.launcher"
+                if ! curl -fsSL -o "$out" "https://raw.githubusercontent.com/PickleHik3/termux-launcher/$ref/$path"; then
+                    rm -f "$out"
+                    echo "$name: could not fetch launcher:$path@$ref (set TLSTORE_LAUNCHER_REPO to a launcher checkout to work offline)" >&2
+                    return 1
+                fi
+                sha256sum "$out" | cut -d' ' -f1
+            fi
             ;;
         binaries:*)
             tag="${source#binaries:}"
