@@ -15,7 +15,7 @@ use tlstore_ui::render::{Frame, HitMap, Renderer, Sym};
 use tlstore_ui::store::motion::Timeline;
 use tlstore_ui::store::proc::Env;
 use tlstore_ui::store::scene::{El, Motion, NavKind, Phase, Scene};
-use tlstore_ui::store::{Router, GH_NOTICE};
+use tlstore_ui::store::{Exit, Router, GH_NOTICE};
 use tlstore_ui::term::{self, Caps, Event, Key, Mouse, MouseKind, Size};
 
 static N: AtomicU32 = AtomicU32::new(0);
@@ -70,6 +70,14 @@ struct Opts {
     /// The stub's `prefetch` reports every fixture asset (else it reports nothing, and every
     /// asset is asked for on its own).
     prefetch: bool,
+    /// The stub's `self-update --check` offers a newer store (0.6 → 0.7).
+    self_update: bool,
+    /// `TLSTORE_UI_SELF_UPDATED`: this copy was started by the one that just updated.
+    self_updated: Option<&'static str>,
+    /// The `hold` file is there from the start: the first job sleeps mid-way.
+    hold: bool,
+    /// `fail-<name>` is there from the start: the stub refuses that item.
+    fail: Option<&'static str>,
 }
 
 impl Default for Opts {
@@ -84,6 +92,10 @@ impl Default for Opts {
             motion_off: false,
             clock: None,
             prefetch: false,
+            self_update: false,
+            self_updated: None,
+            hold: false,
+            fail: None,
         }
     }
 }
@@ -104,18 +116,28 @@ impl H {
         if o.prefetch {
             std::fs::write(dir.join("prefetch-lines"), "").unwrap();
         }
+        if o.self_update {
+            std::fs::write(dir.join("self-update"), "").unwrap();
+        }
+        if o.hold {
+            std::fs::write(dir.join("hold"), "").unwrap();
+        }
+        if let Some(n) = o.fail {
+            std::fs::write(dir.join(format!("fail-{n}")), "").unwrap();
+        }
         let bin = dir.join("bin");
         let gh = if o.gh == Gh::Missing { dir.join("bin/no-such-gh") } else { bin.join("gh") };
         let lc = bin.join("launcherctl");
         let op = bin.join("open-url");
         let sink = Rc::new(RefCell::new(Vec::new()));
-        let env = Env::for_tests(
+        let mut env = Env::for_tests(
             &bin.join("tlstore"),
             &gh,
             o.launcherctl.then_some(lc.as_path()),
             o.opener.then_some(op.as_path()),
             sink.clone(),
         );
+        env.self_updated = o.self_updated.map(str::to_string);
         let mut ctx = Ctx::for_tests(cols, rows);
         ctx.motion = o.motion.is_some() && !o.motion_off;
         if o.caps {
@@ -841,6 +863,102 @@ fn install_from_item_then_esc_keeps_the_job_and_the_word() {
     h.key(Key::Char('x'));
     h.settle();
     std::fs::remove_file(h.dir.join("hold")).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// The store updating itself
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_newer_store_installs_itself_first_then_hands_over() {
+    let clock = Rc::new(Cell::new(Instant::now()));
+    let mut h = H::new(53, 26, Opts { self_update: true, clock: Some(clock.clone()), ..Opts::default() });
+    // The check is the first thing asked, beside the snapshot; a newer store means the
+    // Installing screen, for tlstore itself, before anything else.
+    let calls = h.log("calls.log");
+    assert_eq!(calls.lines().next(), Some("self-update --check --tsv"), "{calls}");
+    assert!(calls.lines().any(|l| l == "self-update --progress"), "{calls}");
+    assert_eq!(h.r().top(), "installing", "{}", h.text);
+    let hdr = layout::header(53, 26, 7, None);
+    assert!(h.row(hdr.name.bottom() as usize - 1).contains("tlstore"), "{}", h.text);
+    assert!(h.row(0).contains("PickleHik3/tlstore"), "{}", h.text);
+    // The stub's stream ran to its end: 100 %, the facts strip old → new, the summary.
+    assert_eq!(h.row(hdr.facts as usize).trim(), "0.6 → 0.7", "{}", h.text);
+    assert!(h.row(hdr.body.y as usize).starts_with("  100%"), "{}", h.text);
+    assert!(h.has("tlstore is up to date."), "{}", h.text);
+    assert!(!h.has("Could not") && !h.has("Stopped"), "{}", h.text);
+    // Held for a moment, then over to the new copy: main re-executes it.
+    assert!(h.r().animating() && !h.r().finished());
+    assert!(!h.key(Key::Enter), "keys do nothing during the hold");
+    assert_eq!(h.r().top(), "installing");
+    advance(&mut h, &clock, 700);
+    assert!(h.r().finished(), "{}", h.text);
+    assert_eq!(*h.r().st.exit.borrow(), Some(Exit::ReExec { version: "0.7".into() }));
+}
+
+#[test]
+fn a_self_update_can_be_stopped_and_the_store_goes_on() {
+    let mut h = H::new(53, 26, Opts { self_update: true, hold: true, ..Opts::default() });
+    assert_eq!(h.r().top(), "installing", "{}", h.text);
+    let hdr = layout::header(53, 26, 7, None);
+    assert_eq!(h.row(hdr.facts as usize).trim(), "updating 0.6 → 0.7", "{}", h.text);
+    assert!(h.row(hdr.body.y as usize).starts_with("  44%"), "{}", h.text);
+    assert!(h.row(hdr.body.y as usize).contains("fetched"), "{}", h.text);
+    assert!(h.has("x cancel") && h.has("esc back"), "{}", h.text);
+    // Backing out stops it (a self-update never runs on under the store) and lands on Front.
+    assert!(!h.key(Key::Esc));
+    assert_eq!(h.r().top(), "front", "{}", h.text);
+    assert!(h.r().st.job.as_ref().is_some_and(|j| j.cancelled));
+    std::fs::remove_file(h.dir.join("hold")).unwrap();
+    h.settle();
+    assert!(!h.r().st.job_running());
+    assert!(h.row(hdr.notice as usize).contains("Stopped before tlstore was done."), "{}", h.text);
+    assert!(h.r().st.exit.borrow().is_none() && !h.r().finished());
+    // The store is the store, on the old version.
+    go_to(&mut h, "dawn");
+    assert!(h.row(hdr.standfirst as usize).contains("a quiet place to write"), "{}", h.text);
+}
+
+#[test]
+fn a_refused_self_update_is_reported_and_the_store_goes_on() {
+    let mut h = H::new(53, 26, Opts { self_update: true, fail: Some("tlstore"), ..Opts::default() });
+    assert_eq!(h.r().top(), "installing", "{}", h.text);
+    let hdr = layout::header(53, 26, 7, None);
+    assert!(h.row(hdr.facts as usize).starts_with("  failed 0.6 → 0.7"), "{}", h.text);
+    assert!(h.row(hdr.notice as usize).contains("Could not update tlstore. Try again later."), "{}", h.text);
+    assert!(h.has("⏎ done"), "{}", h.text);
+    assert!(h.r().st.exit.borrow().is_none() && !h.r().finished());
+    h.key(Key::Enter);
+    assert_eq!(h.r().top(), "front");
+}
+
+#[test]
+fn no_newer_store_means_front_as_before() {
+    let mut h = H::new(53, 26, Opts::default());
+    assert_eq!(h.r().top(), "front", "{}", h.text);
+    let calls = h.log("calls.log");
+    assert_eq!(calls.lines().next(), Some("self-update --check --tsv"), "{calls}");
+    assert!(!calls.contains("self-update --progress"), "{calls}");
+    assert!(!h.has("tlstore updated to") && !h.r().animating(), "{}", h.text);
+    assert!(h.r().st.exit.borrow().is_none());
+}
+
+#[test]
+fn a_just_updated_store_says_so_once_and_never_checks_again() {
+    let clock = Rc::new(Cell::new(Instant::now()));
+    let mut h = H::new(
+        53,
+        26,
+        Opts { self_update: true, self_updated: Some("0.7"), clock: Some(clock.clone()), ..Opts::default() },
+    );
+    assert_eq!(h.r().top(), "front", "{}", h.text);
+    assert!(!h.log("calls.log").contains("self-update"), "{}", h.log("calls.log"));
+    let hdr = layout::header(53, 26, 7, None);
+    assert!(h.row(hdr.notice as usize).contains("tlstore updated to 0.7"), "{}", h.text);
+    assert!(h.r().animating());
+    advance(&mut h, &clock, 5000);
+    assert!(!h.has("tlstore updated to"), "{}", h.text);
+    assert!(!h.r().animating());
 }
 
 // ---------------------------------------------------------------------------

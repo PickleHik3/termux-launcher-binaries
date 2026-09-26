@@ -17,6 +17,7 @@ pub mod proc;
 pub mod readme;
 pub mod scene;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ use crate::picture::{self, FileKey, Lookup, Picture, Pictures};
 use crate::render::Frame;
 use crate::term::{Event, Key};
 
-use data::{parse_progress, parse_updates, AssetKind, Catalog, Progress, Snapshot, STEPS};
+use data::{parse_progress, parse_self_check, parse_updates, AssetKind, Catalog, Progress, Snapshot, STEPS};
 use decode::{Decoder, Done as Answer, Job as DecodeJob};
 use paint::{draw_keys, draw_notice, Facts, Paint, Slots, A_HOME, A_KEY0};
 use proc::{parse_prefetch, Env, Fetch, Task, TaskKind};
@@ -37,6 +38,13 @@ use scene::{Fx, Motion, NavKind, NoMotion, Phase, Scene};
 
 /// How long an item rests under the cursor before its header picture is placed.
 pub const PICTURE_REST: Duration = Duration::from_millis(150);
+/// How long the finished Installing screen of a self-update stays before the new store
+/// takes over.
+pub const SELF_UPDATE_HOLD: Duration = Duration::from_millis(600);
+/// How long Front says "tlstore updated to …" after the new store took over.
+pub const UPDATED_NOTICE: Duration = Duration::from_secs(4);
+/// The store's own repository, the masthead link while it updates itself.
+pub const STORE_REPO: &str = "PickleHik3/tlstore";
 
 /// What a view wants after an event.
 pub enum Go {
@@ -63,12 +71,14 @@ pub trait View {
     fn refresh(&mut self, _st: &Store) {}
 }
 
-/// install, update or remove.
+/// install, update or remove — or the store updating itself (`tlstore self-update
+/// --progress`, the one job that names no items: its item is `tlstore`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verb {
     Install,
     Update,
     Remove,
+    SelfUpdate,
 }
 
 impl Verb {
@@ -77,6 +87,7 @@ impl Verb {
             Verb::Install => "install",
             Verb::Update => "update",
             Verb::Remove => "remove",
+            Verb::SelfUpdate => "self-update",
         }
     }
     /// The facts-strip word while it runs.
@@ -85,6 +96,15 @@ impl Verb {
             Verb::Install => "installing",
             Verb::Update => "updating",
             Verb::Remove => "removing",
+            Verb::SelfUpdate => "updating",
+        }
+    }
+    /// The plain verb of the summary's "Could not … " line.
+    fn word(self) -> &'static str {
+        match self {
+            Verb::Install => "install",
+            Verb::Update | Verb::SelfUpdate => "update",
+            Verb::Remove => "remove",
         }
     }
 }
@@ -224,8 +244,8 @@ impl Job {
             let tail = match (self.verb, many) {
                 (Verb::Install, false) => "is ready",
                 (Verb::Install, true) => "are ready",
-                (Verb::Update, false) => "is up to date",
-                (Verb::Update, true) => "are up to date",
+                (Verb::Update | Verb::SelfUpdate, false) => "is up to date",
+                (Verb::Update | Verb::SelfUpdate, true) => "are up to date",
                 (Verb::Remove, false) => "was removed",
                 (Verb::Remove, true) => "were removed",
             };
@@ -235,7 +255,7 @@ impl Job {
             if self.cancelled {
                 lines.push(format!("Stopped before {} was done.", and_list(&failed)));
             } else {
-                lines.push(format!("Could not {} {}. Try again later.", self.verb.arg(), and_list(&failed)));
+                lines.push(format!("Could not {} {}. Try again later.", self.verb.word(), and_list(&failed)));
             }
         }
         for d in &self.done {
@@ -278,6 +298,23 @@ pub enum Readme {
 /// The notice Front shows when `s` is pressed without a working gh.
 pub const GH_NOTICE: &str = "starring needs gh: pkg install gh, then gh auth login";
 
+/// What `tlstore self-update --check --tsv` has said about a newer store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelfUpdate {
+    /// The check is still running (or was never started: this copy was just updated).
+    Checking,
+    NotOffered,
+    /// A newer release is offered; the versions of the facts strip, `have → new`.
+    Offered { have: String, new: String },
+}
+
+/// What `main` does once the app loop has ended and the terminal is back to normal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// The store moved itself to `version`: run the new `tlstore-ui` in this process's place.
+    ReExec { version: String },
+}
+
 /// State every view reads and changes.
 pub struct Store {
     pub env: Env,
@@ -291,6 +328,16 @@ pub struct Store {
     pub fullscreen: bool,
     /// A one-line message on the notice row until the next key or tap.
     pub notice: Option<String>,
+    /// … or until then, when the notice is on a timer (the "tlstore updated to …" line).
+    pub notice_until: Option<Instant>,
+    /// A newer store, as the startup check reports it.
+    pub self_update: SelfUpdate,
+    /// A self-update job has just been started and Installing should be pushed (read once).
+    self_update_started: bool,
+    /// The self-update went through: the app loop ends then, and `exit` says what follows.
+    pub quit_at: Option<Instant>,
+    /// What `main` does after the loop; shared so it can be read once the router is gone.
+    pub exit: Rc<RefCell<Option<Exit>>>,
     /// True while the startup catalog refresh runs (a job waits for it).
     pub refreshing: bool,
     /// Star this repo as soon as gh says it is not starred yet (`s` pressed while asking).
@@ -346,8 +393,9 @@ impl Fetch {
 }
 
 impl Store {
-    /// Asks for the snapshot and starts the background refresh and the gh check; nothing
-    /// waits.
+    /// Asks whether a newer store is offered, then for the snapshot, and starts the
+    /// background refresh and the gh check; nothing waits. A copy that was just updated
+    /// (`Env::self_updated`) skips the check and says what happened instead.
     pub fn new(env: Env) -> Store {
         let mut st = Store {
             env,
@@ -358,6 +406,11 @@ impl Store {
             stars: HashMap::new(),
             fullscreen: false,
             notice: None,
+            notice_until: None,
+            self_update: SelfUpdate::Checking,
+            self_update_started: false,
+            quit_at: None,
+            exit: Rc::new(RefCell::new(None)),
             refreshing: false,
             pending_star: None,
             fetched: HashMap::new(),
@@ -377,6 +430,20 @@ impl Store {
             header_since: None,
             leaving: false,
         };
+        match st.env.self_updated.clone() {
+            Some(v) => {
+                st.self_update = SelfUpdate::NotOffered;
+                st.notice = Some(format!("tlstore updated to {v}"));
+                st.notice_until = Some(st.now + UPDATED_NOTICE);
+            }
+            None => {
+                let args = ["self-update", "--check", "--tsv"];
+                match Task::spawn(&st.env.tlstore, &args, TaskKind::SelfCheck) {
+                    Ok(t) => st.tasks.push(t),
+                    Err(_) => st.self_update = SelfUpdate::NotOffered,
+                }
+            }
+        }
         st.take_snapshot();
         if let Ok(t) = Task::spawn(&st.env.tlstore, &["update", "--check", "--tsv"], TaskKind::Refresh) {
             st.tasks.push(t);
@@ -544,7 +611,8 @@ impl Store {
             exit: None,
             cancelled: false,
         });
-        if !self.refreshing {
+        // The store's own update needs no catalog, so it does not wait for the refresh.
+        if !self.refreshing || verb == Verb::SelfUpdate {
             self.spawn_job();
         }
         true
@@ -556,7 +624,9 @@ impl Store {
             return;
         }
         let mut args: Vec<String> = vec![job.verb.arg().into(), "--progress".into()];
-        args.extend(job.names.iter().cloned());
+        if job.verb != Verb::SelfUpdate {
+            args.extend(job.names.iter().cloned());
+        }
         match Task::spawn(&self.env.tlstore, &args, TaskKind::Job) {
             Ok(t) => job.task = Some(t),
             Err(_) => {
@@ -581,9 +651,25 @@ impl Store {
     }
 
     /// The job is over: the catalog is asked for again (nothing waits), the phone is told.
+    /// The store's own update is different: nothing to re-read, and the person is looking
+    /// at it. When it went through, the files under this process are the new release — the
+    /// finished screen is held a moment, then the loop ends so `main` runs the new copy.
     fn finish_job(&mut self) {
-        self.take_snapshot();
         self.job_finished = true;
+        if self.job.as_ref().is_some_and(|j| j.verb == Verb::SelfUpdate) {
+            let Some(job) = &self.job else { return };
+            if let Some(d) = job.done.iter().find(|d| d.name == "tlstore" && d.ok) {
+                let version = match (d.message.strip_prefix("updated to "), &self.self_update) {
+                    (Some(v), _) if !v.trim().is_empty() => v.trim().to_string(),
+                    (_, SelfUpdate::Offered { new, .. }) => new.clone(),
+                    _ => String::new(),
+                };
+                self.quit_at = Some(self.now + SELF_UPDATE_HOLD);
+                *self.exit.borrow_mut() = Some(Exit::ReExec { version });
+            }
+            return;
+        }
+        self.take_snapshot();
         let Some(job) = &self.job else { return };
         let lines = job.summary();
         let body = lines.first().cloned().unwrap_or_default();
@@ -595,6 +681,30 @@ impl Store {
     /// True once, after a job has ended (the router puts its summary on the notice row).
     pub fn take_job_finished(&mut self) -> bool {
         std::mem::take(&mut self.job_finished)
+    }
+
+    /// True once, after the startup check found a newer store and its job started (the
+    /// router pushes Installing).
+    pub fn take_self_update_started(&mut self) -> bool {
+        std::mem::take(&mut self.self_update_started)
+    }
+
+    /// The check's answer landed: a newer store starts installing itself at once, unless a
+    /// job is already running (then it waits for the next launch).
+    fn on_self_check(&mut self, code: i32, lines: Vec<String>) {
+        let offered = match code {
+            0 => parse_self_check(&lines.join("\n")).filter(|c| c.available),
+            _ => None,
+        };
+        match offered {
+            Some(c) if !self.job_running() => {
+                self.self_update = SelfUpdate::Offered { have: c.have, new: c.new };
+                if self.start_job(Verb::SelfUpdate, vec!["tlstore".into()]) {
+                    self.self_update_started = true;
+                }
+            }
+            _ => self.self_update = SelfUpdate::NotOffered,
+        }
     }
 
     /// Fds the app loop should watch.
@@ -658,6 +768,7 @@ impl Store {
                     self.start_prefetch();
                 }
             }
+            TaskKind::SelfCheck => self.on_self_check(code, lines),
             TaskKind::Refresh => {
                 self.refreshing = false;
                 if code == 0 {
@@ -1173,7 +1284,7 @@ impl Store {
         let finished = pct == 100;
         let message = match verb {
             Verb::Install => "installed",
-            Verb::Update => "updated",
+            Verb::Update | Verb::SelfUpdate => "updated",
             Verb::Remove => "removed",
         };
         self.job = Some(Job {
@@ -1389,6 +1500,10 @@ impl Screen for Router {
         if self.st.wake_at.is_some_and(|w| now >= w) {
             self.st.wake_at = None;
         }
+        if self.st.notice_until.is_some_and(|t| now >= t) {
+            self.st.notice_until = None;
+            self.st.notice = None;
+        }
         self.draw_phase(f, now);
         if self.motion_on && self.motion.drawn(now, &self.scene) {
             f.clear();
@@ -1406,6 +1521,10 @@ impl Screen for Router {
                         v.refresh(&self.st);
                     }
                 }
+                if self.st.take_self_update_started() {
+                    // A newer store: its Installing screen comes before anything else.
+                    return self.navigate(Go::Push(Box::new(installing::Installing::new())));
+                }
                 if self.st.take_job_finished() {
                     if let Some(job) = self.st.job.as_ref().filter(|j| !j.running()) {
                         let lines = job.summary();
@@ -1422,7 +1541,10 @@ impl Screen for Router {
                 return Nav::Stay;
             }
             Event::Resize(_) => return Nav::Stay,
-            Event::Key(_) | Event::Tap { .. } => self.st.notice = None,
+            Event::Key(_) | Event::Tap { .. } => {
+                self.st.notice = None;
+                self.st.notice_until = None;
+            }
             _ => {}
         }
         let ev = match ev {
@@ -1445,7 +1567,10 @@ impl Screen for Router {
     }
 
     fn animating(&self) -> bool {
-        self.motion.active() || self.st.wake_at.is_some()
+        self.motion.active()
+            || self.st.wake_at.is_some()
+            || self.st.notice_until.is_some()
+            || self.st.quit_at.is_some()
     }
 
     fn tick(&mut self, _now: Instant, _ctx: &mut Ctx) -> bool {
@@ -1454,7 +1579,17 @@ impl Screen for Router {
             self.st.wake_at = None;
             return true;
         }
+        // A timed notice is cleared by the draw; the hold after a self-update ends in
+        // `finished`, which the loop asks right after this.
+        if self.st.notice_until.is_some_and(|t| now >= t) || self.st.quit_at.is_some_and(|t| now >= t) {
+            return true;
+        }
         self.motion.active()
+    }
+
+    /// The self-update went through and its finished screen has been held: over to `main`.
+    fn finished(&self) -> bool {
+        self.st.quit_at.is_some_and(|t| (self.clock)() >= t)
     }
 
     fn watch(&self) -> Vec<RawFd> {

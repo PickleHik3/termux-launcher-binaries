@@ -80,6 +80,12 @@ pub trait Screen {
     fn tick(&mut self, _now: Instant, _ctx: &mut Ctx) -> bool {
         false
     }
+    /// True once the screen is over of its own accord (nothing was pressed): the loop ends
+    /// as after a quit, and the terminal is restored. Polled after every tick, so a screen
+    /// that finishes on a timer keeps [`Screen::animating`] true until then.
+    fn finished(&self) -> bool {
+        false
+    }
     /// File descriptors to watch (e.g. a child's stdout); each readable one arrives as
     /// `Event::Readable(fd)`. The screen reads it itself.
     fn watch(&self) -> Vec<RawFd> {
@@ -227,6 +233,9 @@ pub fn run(first: Box<dyn Screen>, opts: Options) -> io::Result<()> {
                     dirty = true;
                 }
             }
+        }
+        if top.finished() {
+            break 'main;
         }
 
         if dirty {

@@ -8,9 +8,9 @@ use crate::render::{Sizing, Underline};
 use crate::term::{Event, Key};
 
 use super::data::STEPS;
-use super::paint::{draw_header, HeaderContent, Masthead, Paint, Slot, Slots, A_BACK, A_CONTEXT};
+use super::paint::{draw_header, Facts, HeaderContent, Masthead, Paint, Slot, Slots, A_BACK, A_CONTEXT};
 use super::scene::El;
-use super::{header_for, Go, Store, View};
+use super::{header_for, Go, SelfUpdate, Store, Verb, View, STORE_REPO};
 
 #[derive(Default)]
 pub struct Installing;
@@ -60,11 +60,6 @@ impl View for Installing {
         let queued = job.queued();
         let summary = job.summary();
 
-        let info = st.cat.info(&name).clone();
-        let setup = info.setup();
-        let repo = info.upstream().map(str::to_string);
-        // The header picture stays a still here: nothing plays while the script works.
-        let (hdr, pic) = header_for(p, st, &name, 7, !setup, false, false);
         let state = if running {
             Some(verb.ing())
         } else if failed {
@@ -72,12 +67,31 @@ impl View for Installing {
         } else {
             None
         };
-        let facts = st.facts(&name, state);
+        let info = st.cat.info(&name).clone();
+        let (hdr, pic, standfirst, repo, setup, facts) = if verb == Verb::SelfUpdate {
+            // The store itself: no catalog row, no picture; the facts strip reads
+            // `updating <old> → <new>` from the startup check's answer.
+            st.header_shown(&name);
+            let hdr = layout::header(p.f.cols(), p.f.rows(), 7, None);
+            let (version, new) = match &st.self_update {
+                SelfUpdate::Offered { have, new } => (have.clone(), Some(new.clone())),
+                _ => (String::new(), None),
+            };
+            let facts = Facts { state: state.map(str::to_string), version, new, more: Vec::new() };
+            (hdr, None, SELF_STANDFIRST, Some(STORE_REPO.to_string()), false, facts)
+        } else {
+            let setup = info.setup();
+            let repo = info.upstream().map(str::to_string);
+            // The header picture stays a still here: nothing plays while the script works.
+            let (hdr, pic) = header_for(p, st, &name, 7, !setup, false, false);
+            let facts = st.facts(&name, state);
+            (hdr, pic, info.standfirst(), repo, setup, facts)
+        };
         let content = HeaderContent {
             masthead: Masthead::Page { repo, setup },
             picture: pic,
             name: &name,
-            standfirst: info.standfirst(),
+            standfirst,
             facts,
         };
         draw_header(p, &hdr, &content);
@@ -176,6 +190,9 @@ impl View for Installing {
     }
 
     fn handle(&mut self, ev: &Event, st: &mut Store) -> Go {
+        if st.job.as_ref().is_some_and(|j| j.verb == Verb::SelfUpdate) {
+            return self.handle_self_update(ev, st);
+        }
         match ev {
             Event::Key(Key::Esc | Key::Backspace) | Event::Tap { action: A_BACK, .. } => Go::Back,
             Event::Key(Key::Enter) if !st.job_running() => Go::Back,
@@ -199,5 +216,45 @@ impl View for Installing {
         }
     }
 }
+
+impl Installing {
+    /// The store updating itself. A self-update left running in the background would swap
+    /// the files under this very process, so backing out of it — `esc`, `x`, `q` — stops it
+    /// first, the way `x` stops any job; the store then goes on as it was. Once it went
+    /// through, the screen is held for a moment on its way to the new store and keys do
+    /// nothing.
+    fn handle_self_update(&mut self, ev: &Event, st: &mut Store) -> Go {
+        let running = st.job_running();
+        if st.quit_at.is_some() {
+            return Go::Stay;
+        }
+        match ev {
+            Event::Key(Key::Esc | Key::Backspace) | Event::Tap { action: A_BACK, .. } => {
+                if running {
+                    st.cancel_job();
+                }
+                Go::Back
+            }
+            Event::Key(Key::Enter) if !running => Go::Back,
+            Event::Key(Key::Char('x')) if running => {
+                st.cancel_job();
+                Go::Stay
+            }
+            Event::Key(Key::Char('q')) if running => {
+                st.cancel_job();
+                Go::Quit
+            }
+            Event::Tap { action: A_CONTEXT, .. } => {
+                st.open_repo(STORE_REPO);
+                Go::Stay
+            }
+            Event::Key(_) => Go::Pass,
+            _ => Go::Stay,
+        }
+    }
+}
+
+/// The standfirst under the store's own name while it updates itself.
+const SELF_STANDFIRST: &str = "the launcher's tool store";
 
 use super::Job;

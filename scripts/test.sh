@@ -1356,18 +1356,102 @@ y
         expect_no_file "no staging file is left beside the script" "$TPREFIX/bin/tlstore.new"
         expect_no_file "no staging file is left beside the UI" "$ui.new"
 
+        # update --check is the refresh tlstore-ui runs in the background: it
+        # must never swap the files under a running UI (self-update --progress
+        # does that in plain view).
         su_reset
         RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
         tl update --check
         expect_status "update --check, the UI's background refresh" 0
-        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "update --check keeps tlstore current too"; fi
-        expect_content "and the store program with it" "$ui" "$(printf '#!/bin/sh\necho the new ui')"
+        expect_no_out "no longer updates tlstore itself" "tlstore is now version"
+        su_untouched "update --check"
 
         su_reset
         RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
         tl_stdout update --check --tsv
-        expect_no_out "under --tsv the self-update says nothing on stdout" "tlstore is now version"
-        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "but it still happened"; fi
+        expect_no_out "nor under --tsv" "tlstore is now version"
+        su_untouched "update --check --tsv"
+
+        # --- self-update --check --tsv: the first thing tlstore-ui asks ---
+        cur_ver="$(sed -n 's/^TLSTORE_VERSION=//p' "$TLSTORE" | head -1)"
+        su_cache="$TESTHOME/.cache/tlstore"
+        su_reset
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
+        tl_stdout self-update --check --tsv
+        expect_status "self-update --check --tsv, a newer release" 0
+        expect_out "one self line: installed, latest, available" $'^self\t'"$cur_ver"$'\t9.9\t1$'
+        expect_file "the verified script waits in the cache for the install" "$su_cache/tlstore.new"
+        expect_file "with its signature" "$su_cache/tlstore.new.minisig"
+        su_untouched "the check alone"
+
+        RELEASE_KNOB="file://$FX/release-same"; UI_KNOB="$ui"
+        tl_stdout self-update --check --tsv
+        expect_status "self-update --check --tsv, the same version" 0
+        expect_out "names it, not available" $'^self\t'"$cur_ver"$'\t'"$cur_ver"$'\t0$'
+        expect_no_file "and keeps nothing in the cache" "$su_cache/tlstore.new"
+
+        UI_KNOB="$ui"
+        tl_stdout self-update --check --tsv
+        expect_status "self-update --check --tsv, offline" 0
+        expect_out "no version, not available" $'^self\t'"$cur_ver"$'\t-\t0$'
+
+        RELEASE_KNOB="file://$FX/release-bad"; UI_KNOB="$ui"
+        tl_stdout self-update --check --tsv
+        expect_status "self-update --check --tsv, a bad signature" 0
+        expect_out "no version, not available" $'^self\t'"$cur_ver"$'\t-\t0$'
+        expect_no_file "a refused script is not kept" "$su_cache/tlstore.new"
+        su_untouched "the check, bad signature"
+
+        # --- self-update --progress: the stream the Installing screen reads ---
+        su_reset
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
+        tl_stdout self-update --check --tsv
+        : > "$ROOT/curl.log"
+        RELEASE_KNOB="file://$FX/release-new"; UI_KNOB="$ui"
+        tl_stdout self-update --progress
+        expect_status "self-update --progress after the check" 0
+        expect_out "the item is tlstore, fetched first" $'^step\ttlstore\t[0-9]*\tfetched$'
+        expect_out "signature checked" $'^step\ttlstore\t85\tsignature checked$'
+        expect_out "putting files in place" $'^step\ttlstore\t92\tputting files in place$'
+        expect_out "ready" $'^step\ttlstore\t100\tready$'
+        expect_out "the done line names the version" $'^done\ttlstore\tok\tupdated to 9.9$'
+        got=$(printf '%s\n' "$OUT" | awk -F '\t' '$1 == "step" && $2 == "tlstore" { print $3 }' | tr '\n' ' ')
+        if printf '%s\n' "$got" | tr ' ' '\n' | awk 'NF && $1 + 0 <= last { bad = 1 } NF { last = $1 + 0 } END { exit bad }'; then
+            pass
+        else
+            fail "self-update step percentages only ever grow" "$got"
+        fi
+        case "$got" in
+            *" 80 85 92 100 ") pass ;;
+            *) fail "the store program's download fills the bar to 80, then the checks and the placing" "$got" ;;
+        esac
+        if grep -q "release-new/tlstore.minisig" "$ROOT/curl.log"; then fail "the script the check verified is not fetched again" "$(cat "$ROOT/curl.log")"; else pass; fi
+        if grep -q "release-new/tlstore-ui-arm64-v8a" "$ROOT/curl.log"; then pass; else fail "the store program is fetched" "$(cat "$ROOT/curl.log")"; fi
+        expect_no_out "stdout carries no narration" "tlstore is now version"
+        if grep -q "^# the newer one" "$TPREFIX/bin/tlstore"; then pass; else fail "the newer tlstore is in place"; fi
+        expect_content "the store program moved with it" "$ui" "$(printf '#!/bin/sh\necho the new ui')"
+        if [ -x "$ui" ]; then pass; else fail "the new store program is executable"; fi
+        expect_content "the launcher's record of the UI names the new one" "$store/.tlstore-ui-sha256" "$new_ui_digest"
+        expect_no_file "nothing is left in the cache" "$su_cache/tlstore.new"
+        expect_no_file "no staging file is left beside the script" "$TPREFIX/bin/tlstore.new"
+        expect_no_file "no staging file is left beside the UI" "$ui.new"
+
+        su_reset
+        RELEASE_KNOB="file://$FX/release-badui"; UI_KNOB="$ui"
+        tl_stdout self-update --progress
+        expect_status "a tampered store program fails the --progress self-update" 1
+        expect_out "with a done/failed line" $'^done\ttlstore\tfailed\tthe store program that was offered does not match'
+        expect_no_out "and never claims to be ready" $'^step\ttlstore\t100\tready$'
+        su_untouched "--progress, tampered UI"
+        expect_no_file "the refused program is not kept" "$su_cache/tlstore-ui.new"
+        expect_no_file "nor the script" "$su_cache/tlstore.new"
+
+        su_reset
+        UI_KNOB="$ui"
+        tl_stdout self-update --progress
+        expect_status "offline, the --progress self-update fails" 1
+        expect_out "and says so on the stream" $'^done\ttlstore\tfailed\t'
+        su_untouched "--progress, offline"
 
         su_reset
         RELEASE_KNOB="file://$FX/release-same"; UI_KNOB="$ui"

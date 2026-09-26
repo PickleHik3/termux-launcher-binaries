@@ -284,6 +284,27 @@ impl Catalog {
     }
 }
 
+/// What `tlstore self-update --check --tsv` said: the version in place, the newest one
+/// offered (`-` when none could be read), and whether the update can be had.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelfCheck {
+    pub have: String,
+    pub new: String,
+    pub available: bool,
+}
+
+/// Parses the one line `self\t<installed>\t<latest>\t<available 0|1>`.
+pub fn parse_self_check(text: &str) -> Option<SelfCheck> {
+    text.lines().find_map(|l| {
+        let f: Vec<&str> = l.split('\t').collect();
+        (f.len() >= 4 && f[0] == "self").then(|| SelfCheck {
+            have: f[1].to_string(),
+            new: f[2].to_string(),
+            available: f[3].trim() == "1",
+        })
+    })
+}
+
 /// The four step words every item goes through, in order.
 pub const STEPS: [&str; 4] = ["fetched", "signature checked", "putting files in place", "ready"];
 
@@ -407,6 +428,17 @@ mod tests {
             Some(Progress::Done { name: "kitten".into(), ok: true, message: "kept your config.fish".into() })
         );
         assert_eq!(parse_progress("Installing: kitten"), None);
+        assert_eq!(
+            parse_self_check("self\t0.6\t0.7\t1\n"),
+            Some(SelfCheck { have: "0.6".into(), new: "0.7".into(), available: true })
+        );
+        let refused = "tlstore: the tlstore that was offered is not signed\nself\t0.6\t-\t0";
+        assert_eq!(
+            parse_self_check(refused),
+            Some(SelfCheck { have: "0.6".into(), new: "-".into(), available: false })
+        );
+        assert_eq!(parse_self_check("self\t0.6\n"), None);
+        assert_eq!(parse_self_check(""), None);
         assert_eq!(step_word(0), "fetching…");
         assert_eq!(step_word(2), "placing…");
         assert_eq!(step_word(4), "ready");
