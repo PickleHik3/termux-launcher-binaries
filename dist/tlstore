@@ -46,7 +46,7 @@
 
 set -u
 
-TLSTORE_VERSION=0.6
+TLSTORE_VERSION=0.7
 
 # The store program that pairs with this script, one digest per processor.
 # Empty in the source tree: scripts/release.sh --prepare fills them in from
@@ -55,9 +55,9 @@ TLSTORE_VERSION=0.6
 # self_update, which reads them out of the downloaded copy, not this one).
 # Keep these two lines exactly in this shape.
 # shellcheck disable=SC2034
-TLSTORE_UI_SHA256_arm64_v8a=6d6fc42fe57fa76d616675b7bdf46bdfa0f120a9e3ccabb5b0def8f95373bae0
+TLSTORE_UI_SHA256_arm64_v8a=d8f33f58112c0f192b797b571e300385dd7fcb6003b0d9f8233f168ed2b8d712
 # shellcheck disable=SC2034
-TLSTORE_UI_SHA256_x86_64=bf835035f0c1f6c872bb3c1800696637de1dff35f9f919a5df76441dd903fae6
+TLSTORE_UI_SHA256_x86_64=fd1120fcd8563298c63044fdc04c9bb69f2b80f8d028a212f9076b7f81c54f09
 
 PREFIX="${TLSTORE_PREFIX:-${PREFIX:-${HOME%/files/home}/files/usr}}"
 HOME="${HOME:?tlstore needs HOME}"
@@ -1416,6 +1416,7 @@ tlstore installs the tools and configs the launcher shows off.
   tlstore remove <name...>    remove items tlstore installed
   tlstore update [name...]    bring what you have up to date
   tlstore refresh             update the list of items
+  tlstore self-update         bring tlstore itself up to date (--check: only say)
   tlstore shell               install the fish shell setup
   tlstore display             set up graphics for Linux apps
   tlstore doctor              check that everything is in place
@@ -2796,11 +2797,11 @@ cmd_update() {
     update_items "$@"
     cu_status=$?
     # tlstore keeps itself, and the store program that pairs with it, current
-    # on a plain `update` and on `update --check` — the refresh tlstore-ui runs
-    # when it starts — but never offline, and not inside a --progress stream:
-    # that stream carries the item lines and nothing else, and the UI already
-    # asked when it started.
-    if [ "$cu_status" != 2 ] && [ "${cu_offline:-0}" = 0 ] && [ "$PROGRESS" != 1 ]; then
+    # on a plain `update` — never offline, never on `--check` (the refresh
+    # tlstore-ui runs in the background; swapping the files under a running
+    # UI is what `self-update --progress` exists to do in plain view), and
+    # not inside a --progress stream, which carries the item lines alone.
+    if [ "$cu_status" != 2 ] && [ "${cu_offline:-0}" = 0 ] && [ "${cu_check:-0}" = 0 ] && [ "$PROGRESS" != 1 ]; then
         self_update
     fi
     return "$cu_status"
@@ -2876,78 +2877,147 @@ su_say() {
 # the script first (an older UI reads a newer script's output — new columns
 # only ever land at the end — the other way round does not hold), and the
 # launcher's own record of the UI (.tlstore-ui-sha256) is updated so the app
-# still counts the file as its own. Nothing is re-executed: the copy that is
-# running finishes its work on the old inode.
-self_update() {
+# still counts the file as its own. Nothing is re-executed here: the copy
+# that is running finishes its work on the old inode (tlstore-ui re-executes
+# itself after `self-update --progress`, see cmd_self_update).
+#
+# The work is split so three callers share it: `update` (self_update: quiet,
+# one line when something moved), `self-update --check --tsv` (the script
+# alone, left verified in the cache) and `self-update --progress` (the whole
+# thing as a --progress stream for tlstore-ui, which takes the cached script
+# rather than fetching it twice). Each step returns 0 done, 1 nothing to do
+# (offline, nothing newer), 2 refused — with the reason in SU_NOTE.
+SU_NOTE=""
+
+su_paths() {
     su_target="$PREFIX/bin/tlstore"
-    [ -f "$su_target" ] || return 0
-    have curl || return 0
-    have minisign || return 0
-    [ -f "$PUBKEY" ] || return 0
-    mkdir -p "$CACHE_DIR"
     su_new="$CACHE_DIR/tlstore.new"
     su_sig="$CACHE_DIR/tlstore.new.minisig"
     su_ui_new="$CACHE_DIR/tlstore-ui.new"
-    rm -f "$su_new" "$su_sig" "$su_ui_new"
-    if ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_new" "$RELEASE_BASE/tlstore" 2>/dev/null ||
+}
+
+# su_ready — something to replace, and the tools to check what is offered.
+su_ready() {
+    su_paths
+    [ -f "$su_target" ] || return 1
+    have curl || return 1
+    have minisign || return 1
+    [ -f "$PUBKEY" ] || return 1
+    mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+    return 0
+}
+
+# su_verified — the script in the cache checks out against the trusted key
+# and is ahead of this one; su_version is its version (set whenever one
+# could be read, so a caller can name the version that was refused).
+su_verified() {
+    su_version=""
+    [ -f "$su_new" ] && [ -f "$su_sig" ] || return 1
+    minisign -Q -V -p "$PUBKEY" -x "$su_sig" -m "$su_new" >/dev/null 2>&1 || return 2
+    su_version=$(sed -n 's/^TLSTORE_VERSION=\([0-9][0-9.]*\)$/\1/p' "$su_new" | head -1)
+    [ -n "$su_version" ] || return 1
+    version_newer "$su_version" "$TLSTORE_VERSION"
+}
+
+# su_fetch_script <use cache 0|1> — the newest release's script and its
+# signature into the cache, verified. With 1, a copy `self-update --check`
+# left there is taken as it is when it still verifies and is still newer.
+# The cache is emptied whenever this returns 1 or 2.
+su_fetch_script() {
+    SU_NOTE=""
+    if [ "$1" = 1 ] && su_verified; then
+        return 0
+    fi
+    rm -f "$su_new" "$su_sig"
+    # Inside a --progress stream the script's own download is the first,
+    # small share of the bar; it may well jump straight to the end of it.
+    PROGRESS_FETCH_END=8
+    if ! curl_to "$RELEASE_BASE/tlstore" "$su_new" 2>/dev/null ||
        ! curl -fsL --connect-timeout 5 --max-time 60 -o "$su_sig" "$RELEASE_BASE/tlstore.minisig" 2>/dev/null; then
         rm -f "$su_new" "$su_sig"
-        return 0
+        return 1
     fi
-    if ! minisign -Q -V -p "$PUBKEY" -x "$su_sig" -m "$su_new" >/dev/null 2>&1; then
-        rm -f "$su_new" "$su_sig"
-        err "the tlstore that was offered is not signed by the launcher — ignoring it"
-        return 0
-    fi
-    su_version=$(sed -n 's/^TLSTORE_VERSION=\([0-9][0-9.]*\)$/\1/p' "$su_new" | head -1)
-    if [ -z "$su_version" ] || ! version_newer "$su_version" "$TLSTORE_VERSION"; then
-        rm -f "$su_new" "$su_sig"
-        return 0
-    fi
-
-    # The store program, where one is in place to be kept in step.
-    su_ui_digest=""
-    if [ -f "$TLSTORE_UI_BIN" ]; then
-        su_abi=$(ui_abi)
-        su_key=$(printf '%s' "$su_abi" | tr '-' '_')
-        [ -z "$su_abi" ] || su_ui_digest=$(sed -n "s/^TLSTORE_UI_SHA256_$su_key=\([0-9a-f]\{64\}\)\$/\1/p" "$su_new" | head -1)
-        if [ -z "$su_ui_digest" ]; then
+    su_verified
+    case $? in
+        0) return 0 ;;
+        2)
             rm -f "$su_new" "$su_sig"
-            err "tlstore $su_version names no store program for this processor — keeping what you have"
-            return 0
-        fi
-        if ! curl -fsL --connect-timeout 5 --max-time 120 -o "$su_ui_new" "$RELEASE_BASE/tlstore-ui-$su_abi" 2>/dev/null; then
-            rm -f "$su_new" "$su_sig" "$su_ui_new"
-            err "could not download the store program that goes with tlstore $su_version — keeping what you have"
-            return 0
-        fi
-        if [ "$(file_digest "$su_ui_new")" != "$su_ui_digest" ]; then
-            rm -f "$su_new" "$su_sig" "$su_ui_new"
-            err "the store program that was offered does not match what tlstore $su_version expects — keeping what you have"
-            return 0
-        fi
-    fi
+            SU_NOTE="the tlstore that was offered is not signed by the launcher — ignoring it"
+            return 2
+            ;;
+        *)
+            rm -f "$su_new" "$su_sig"
+            return 1
+            ;;
+    esac
+}
 
-    # Stage both beside their targets, then rename: a copy that fails leaves
-    # everything as it was.
+# su_ui_digest_named — where a store program is in place, the digest the
+# new script names for this processor (su_ui_digest; empty with no UI to
+# pair). 2 when a UI is here and the script names none for it.
+su_ui_digest_named() {
+    su_ui_digest=""
+    [ -f "$TLSTORE_UI_BIN" ] || return 0
+    su_abi=$(ui_abi)
+    su_key=$(printf '%s' "$su_abi" | tr '-' '_')
+    [ -z "$su_abi" ] || su_ui_digest=$(sed -n "s/^TLSTORE_UI_SHA256_$su_key=\([0-9a-f]\{64\}\)\$/\1/p" "$su_new" | head -1)
+    if [ -z "$su_ui_digest" ]; then
+        SU_NOTE="tlstore $su_version names no store program for this processor — keeping what you have"
+        return 2
+    fi
+    return 0
+}
+
+# su_fetch_ui — the store program the new script names, checked against the
+# signed digest. Inside a --progress stream its download is most of the bar
+# (8 to 80), and "signature checked" is the moment the digest matches: the
+# script's own signature was checked before this download began, and a
+# refused script ends the job there.
+su_fetch_ui() {
+    su_ui_digest_named || return 2
+    [ -n "$su_ui_digest" ] || return 0
+    progress_stage 8 fetched
+    PROGRESS_FETCH_END=80
+    CANCEL_TMP="$su_ui_new"
+    if ! curl_to "$RELEASE_BASE/tlstore-ui-$su_abi" "$su_ui_new" 2>/dev/null; then
+        rm -f "$su_ui_new"
+        CANCEL_TMP=""
+        SU_NOTE="could not download the store program that goes with tlstore $su_version — keeping what you have"
+        return 2
+    fi
+    CANCEL_TMP=""
+    progress_stage 85 "signature checked"
+    if [ "$(file_digest "$su_ui_new")" != "$su_ui_digest" ]; then
+        rm -f "$su_ui_new"
+        SU_NOTE="the store program that was offered does not match what tlstore $su_version expects — keeping what you have"
+        return 2
+    fi
+    return 0
+}
+
+# su_place — stage both beside their targets, then rename, the script first:
+# a copy that fails leaves everything as it was.
+su_place() {
+    progress_stage 92 "putting files in place"
     su_stage="$su_target.new"
     su_ui_stage="$TLSTORE_UI_BIN.new"
+    CANCEL_EXTRA="$CANCEL_EXTRA $su_stage $su_ui_stage"
     if ! cp "$su_new" "$su_stage" || ! chmod 755 "$su_stage"; then
-        rm -f "$su_stage" "$su_new" "$su_sig" "$su_ui_new"
-        err "could not put the newer tlstore in place"
-        return 0
+        rm -f "$su_stage"
+        SU_NOTE="could not put the newer tlstore in place"
+        return 2
     fi
     if [ -n "$su_ui_digest" ]; then
         if ! cp "$su_ui_new" "$su_ui_stage" || ! chmod 755 "$su_ui_stage"; then
-            rm -f "$su_stage" "$su_ui_stage" "$su_new" "$su_sig" "$su_ui_new"
-            err "could not put the newer store program in place — keeping what you have"
-            return 0
+            rm -f "$su_stage" "$su_ui_stage"
+            SU_NOTE="could not put the newer store program in place — keeping what you have"
+            return 2
         fi
     fi
     if ! mv "$su_stage" "$su_target"; then
-        rm -f "$su_stage" "$su_ui_stage" "$su_new" "$su_sig" "$su_ui_new"
-        err "could not put the newer tlstore in place"
-        return 0
+        rm -f "$su_stage" "$su_ui_stage"
+        SU_NOTE="could not put the newer tlstore in place"
+        return 2
     fi
     if [ -n "$su_ui_digest" ]; then
         if mv "$su_ui_stage" "$TLSTORE_UI_BIN"; then
@@ -2957,9 +3027,131 @@ self_update() {
             err "could not put the newer store program in place"
         fi
     fi
-    rm -f "$su_new" "$su_sig" "$su_ui_new"
-    su_say "tlstore is now version $su_version."
     return 0
+}
+
+# self_update_try <use cache 0|1> — the whole thing, quietly. 0 updated
+# (su_version says to what), 1 nothing to do, 2 refused (SU_NOTE says why);
+# after 1 or 2 both old files are where they were.
+self_update_try() {
+    SU_NOTE=""
+    su_ready || return 1
+    # What a cancel has to drop, beyond the download in flight: the cached
+    # script pair, the program, and (from su_place on) the staged copies.
+    CANCEL_EXTRA="$su_new $su_sig $su_ui_new"
+    su_fetch_script "$1"
+    su_rc=$?
+    if [ "$su_rc" = 0 ]; then
+        if su_fetch_ui && su_place; then
+            su_rc=0
+        else
+            su_rc=2
+        fi
+    fi
+    rm -f "$su_new" "$su_sig" "$su_ui_new"
+    CANCEL_EXTRA=""
+    PROGRESS_FETCH_END=55
+    return "$su_rc"
+}
+
+# The self-update `update` runs: one line when something moved, the reason
+# when something was refused, nothing otherwise.
+self_update() {
+    self_update_try 0
+    case $? in
+        0) su_say "tlstore is now version $su_version." ;;
+        2) err "$SU_NOTE" ;;
+    esac
+    return 0
+}
+
+# tlstore self-update --check --tsv — for tlstore-ui, when it starts: one
+# line, `self <installed> <latest> <available 0|1>`. Only the signed script
+# is fetched and verified; when it is newer (and, where a store program is
+# in place, names one for this processor) it stays in the cache for the
+# --progress run that follows, so it is not fetched twice. Offline, refused
+# or nothing newer: available 0, latest `-` when no version could be read,
+# and nothing is left behind.
+self_update_check() {
+    su_avail=0
+    su_latest="-"
+    if su_ready; then
+        su_fetch_script 0
+        case $? in
+            0)
+                su_latest=$su_version
+                if su_ui_digest_named; then
+                    su_avail=1
+                else
+                    rm -f "$su_new" "$su_sig"
+                    err "$SU_NOTE"
+                fi
+                ;;
+            2) err "$SU_NOTE" ;;
+            *) [ -z "${su_version:-}" ] || su_latest=$su_version ;;
+        esac
+    fi
+    if [ "${cs_tsv:-0}" = 1 ]; then
+        printf 'self\t%s\t%s\t%s\n' "$TLSTORE_VERSION" "$su_latest" "$su_avail"
+    elif [ "$su_avail" = 1 ]; then
+        say "tlstore $su_latest is available; you have $TLSTORE_VERSION."
+    else
+        say "tlstore is up to date."
+    fi
+    return 0
+}
+
+# tlstore self-update --progress — the same as `update`'s self-update, as a
+# --progress stream for the one item `tlstore`: fetched (the script to 8,
+# then the store program to 80, as curl reports it), signature checked (85),
+# putting files in place (92), ready (100), then `done tlstore ok updated to
+# <v>`, or `done tlstore failed <reason>` with both old files untouched. A
+# cancel (SIGTERM to the process group) drops the part file, the staged
+# copies and the cached script, and closes the stream the usual way.
+self_update_progress() {
+    PROGRESS=1
+    ASSUME_YES=1
+    CANCEL_ITEM=tlstore
+    PROGRESS_AT=0
+    progress_stage 2 fetched
+    self_update_try 1
+    su_rc=$?
+    case "$su_rc" in
+        0)
+            progress_stage 100 ready
+            progress_done tlstore ok "updated to $su_version"
+            ;;
+        2)
+            progress_done tlstore failed "$SU_NOTE"
+            ;;
+        *)
+            progress_done tlstore failed "no newer tlstore was offered"
+            ;;
+    esac
+    CANCEL_ITEM=""
+    [ "$su_rc" = 0 ] || return 1
+    return 0
+}
+
+cmd_self_update() {
+    cs_check=0
+    cs_tsv=0
+    cs_progress=0
+    for cs_a in "$@"; do
+        case "$cs_a" in
+            --check) cs_check=1 ;;
+            --tsv) cs_tsv=1 ;;
+            --progress) cs_progress=1 ;;
+            *) err "unknown option: $cs_a"; return 2 ;;
+        esac
+    done
+    if [ "$cs_check" = 1 ]; then
+        self_update_check
+    elif [ "$cs_progress" = 1 ]; then
+        self_update_progress
+    else
+        self_update
+    fi
 }
 
 cd_line() { printf '%-13s %s\n' "$1" "$2"; }
@@ -3091,6 +3283,7 @@ main() {
         remove|uninstall) cmd_remove "$@" ;;
         update|upgrade) cmd_update "$@" ;;
         refresh) cmd_refresh "$@" ;;
+        self-update) cmd_self_update "$@" ;;
         shell) cmd_install fish-shell "$@" ;;
         display) cmd_display "$@" ;;
         doctor) cmd_doctor "$@" ;;
