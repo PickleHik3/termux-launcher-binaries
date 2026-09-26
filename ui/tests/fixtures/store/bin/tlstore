@@ -45,6 +45,39 @@ case "$cmd" in
             *" --check "*) cat "$d/updates.tsv"; exit 0 ;;
         esac
         ;;
+    self-update)
+        # A newer store is offered only when a test drops the file `self-update` in;
+        # the --progress stream then plays the engine's self-update for the item tlstore
+        # (hold: sleeps mid-download like any job; fail-tlstore: a refused program).
+        case " $* " in
+            *" --check "*)
+                if [ -f "$d/self-update" ]; then
+                    printf 'self\t0.6\t0.7\t1\n'
+                else
+                    printf 'self\t0.6\t0.6\t0\n'
+                fi
+                exit 0
+                ;;
+            *" --progress "*)
+                printf 'step\ttlstore\t2\tfetched\n'
+                printf 'step\ttlstore\t8\tfetched\n'
+                printf 'step\ttlstore\t44\tfetched\n'
+                [ -f "$d/hold" ] && sleep 30
+                printf 'step\ttlstore\t80\tfetched\n'
+                if [ -f "$d/fail-tlstore" ]; then
+                    printf 'done\ttlstore\tfailed\tthe store program that was offered does not match what tlstore 0.7 expects\n'
+                    exit 1
+                fi
+                printf 'step\ttlstore\t85\tsignature checked\n'
+                printf 'step\ttlstore\t92\tputting files in place\n'
+                printf 'step\ttlstore\t100\tready\n'
+                printf 'done\ttlstore\tok\tupdated to 0.7\n'
+                rm -f "$d/self-update"
+                exit 0
+                ;;
+        esac
+        exit 2
+        ;;
     info)
         [ "$1" = --tsv ] && shift
         [ -f "$d/info/$1.tsv" ] || exit 1

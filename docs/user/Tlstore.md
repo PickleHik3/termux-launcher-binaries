@@ -215,6 +215,11 @@ run the command above again. If you install Termux Launcher later, the app quiet
 keeping tlstore up to date. If you already have the launcher, running this command does nothing —
 it already provides tlstore.
 
+Inside the launcher, the store keeps itself current in plain view: when a newer tlstore is out,
+plain `tlstore` opens on its Installing screen for `tlstore` itself, and once that is done the
+new store opens on its own with a one-line "tlstore updated to …" notice. Backing out of that
+screen stops the update, and the store you had goes on as before.
+
 ## Plain `tlstore`
 
 Inside the launcher, running `tlstore` with nothing after it opens the store in a window of its

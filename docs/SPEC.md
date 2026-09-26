@@ -528,3 +528,69 @@ machine output stays clean.
 The launcher's installer (`TlstoreInstaller`, in the launcher repository) is being changed
 separately so an APK never puts an older release back; nothing here depends on that beyond the
 `.tlstore-ui-sha256` record above.
+
+## Revision 9 — the store updates itself in plain view (tlstore 0.7)
+
+Revision 8's self-update ran silently inside `update --check`, the refresh `tlstore-ui` starts in
+the background: the files were swapped under a running UI, the UI stayed old until the next
+launch, and nobody saw anything. Now the UI asks first, installs the store itself on its own
+Installing screen before anything else, and hands over to the new copy.
+
+### Engine: `tlstore self-update`
+
+```
+tlstore self-update --check --tsv    self	<installed>	<latest>	<available 0|1>
+tlstore self-update --progress       the --progress stream for the one item `tlstore`
+tlstore self-update                  what `update` does for the script, narrated
+```
+
+`--check --tsv` fetches only `$RELEASE_BASE/tlstore` and `.minisig` (`--connect-timeout 5
+--max-time 60`; offline it answers within that, available 0, latest `-`), verifies against
+`trusted.pub`, and says available 1 when the script is newer *and*, where a `tlstore-ui` is in
+place, names a `TLSTORE_UI_SHA256_<abi>` for this processor. The verified script then stays at
+`$CACHE_DIR/tlstore.new` (+ `.minisig`) for the `--progress` run, which takes it from there when
+it still verifies and is still newer rather than fetching it twice; on 0 nothing is left behind.
+A refused signature is available 0 with one line on stderr, and no file is touched. Exit 0
+whenever the line is printed.
+
+`--progress` (`PROGRESS=1`, `CANCEL_ITEM=tlstore`): `step tlstore 2 fetched`; the script's
+download, when it is not cached, fills 2–8 through `curl_to`; the store program's download
+fills 8–80 as curl reports it; `step tlstore 85 signature checked` when its digest matches the
+one the signed script names (the script's own minisign check came before that download, and a
+refused script ends the job there); `step tlstore 92 putting files in place` before the staging
+and renames of Revision 8 (unchanged: both staged beside their targets, the script renamed
+first); `step tlstore 100 ready`; then `done tlstore ok updated to <v>`, exit 0 — or `done
+tlstore failed <reason>`, exit 1, with both old files where they were. A cancel (SIGTERM to the
+process group) drops the part file, the cached script pair and the staged copies, prints `done
+tlstore failed Cancelled.` and exits 143, as for any job. `self_update` is now
+`self_update_try` (`su_ready`, `su_fetch_script`, `su_fetch_ui`, `su_place`) under three
+callers; `update` keeps self-updating as before, `update --check` no longer does (the test that
+expected it now expects the opposite), and `--offline` and `--progress` item jobs never do.
+
+### UI: Installing for `tlstore`, then the new `tlstore-ui`
+
+`Store::new` starts `self-update --check --tsv` first, beside the snapshot; until it answers,
+the store is exactly as before, and with available 0 nothing changes (no flash, no wait). With
+available 1 and no job running, `Verb::SelfUpdate` starts `self-update --progress` at once (it
+does not wait for the refresh) and the router pushes Installing over whatever is up: the header
+reads `tlstore` in the script face, "the launcher's tool store", the masthead links
+`PickleHik3/tlstore`, the facts strip reads `updating <old> → <new>` from the check, and the
+number, steps and line follow the stream as for any item. `esc`/back, `x` and `q` all cancel
+the job (a self-update left running would swap the files under the UI); `esc` then goes back,
+`q` quits, `x` stays for the summary. A failed job shows its summary and `⏎ done` leads back
+into the store on the old files.
+
+On `done tlstore ok` the finished screen is held 600 ms (`SELF_UPDATE_HOLD`) with keys
+ignored, then `Router::finished` ends the app loop the way a quit does: pending bytes flushed,
+the terminal restored (`LEAVE`: mouse and resize modes off, kitty images deleted, cursor
+shown, main screen, termios back), `Router::drop` (keyboard shown, prefetch stopped). `main`
+then `exec`s the path `current_exe()` gave at startup — taken before the rename replaced the
+file, since `/proc/self/exe` is stale after it — with the same arguments and environment plus
+`TLSTORE_UI_SELF_UPDATED=<new version>`. The new copy reads that variable, skips the check
+(so a launch never updates twice), and shows `tlstore updated to <version>` on Front's notice
+row for four seconds or until a key. If the exec fails, the old copy prints `tlstore updated to
+<version> — run tlstore again` and exits 0. `app::Screen` gains `finished() -> bool`, asked
+after every tick.
+
+`TLSTORE_VERSION` moves to 0.7: a phone on 0.6 only sees this once a release carries a newer
+script.

@@ -21,6 +21,9 @@ pub struct Env {
     pub launcherctl: Option<OsString>,
     /// URL opener when present (`$TLSTORE_OPEN`, else `termux-open-url` on PATH).
     pub opener: Option<OsString>,
+    /// `$TLSTORE_UI_SELF_UPDATED`: the copy that started this one had just moved the store to
+    /// this version. No self-update check runs, and Front says so once.
+    pub self_updated: Option<String>,
     /// Writes an escape sequence straight to the terminal (outside the frame diff).
     pub tty_write: Box<dyn FnMut(&str)>,
 }
@@ -45,11 +48,13 @@ impl Env {
             var("TLSTORE_LAUNCHERCTL").or_else(|| Some("launcherctl".into())).filter(|p| which(p).is_some());
         let opener =
             var("TLSTORE_OPEN").or_else(|| Some("termux-open-url".into())).filter(|p| which(p).is_some());
+        let self_updated = std::env::var("TLSTORE_UI_SELF_UPDATED").ok().filter(|v| !v.is_empty());
         Env {
             tlstore,
             gh,
             launcherctl,
             opener,
+            self_updated,
             tty_write: Box::new(|s: &str| {
                 if let Ok(mut t) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
                     let _ = t.write_all(s.as_bytes());
@@ -71,6 +76,7 @@ impl Env {
             gh: gh.into(),
             launcherctl: launcherctl.map(Into::into),
             opener: opener.map(Into::into),
+            self_updated: None,
             tty_write: Box::new(move |s: &str| sink.borrow_mut().push(s.to_string())),
         }
     }
@@ -156,8 +162,10 @@ pub fn parse_prefetch(line: &str) -> Option<PrefetchLine> {
 /// What a background task is for; the router routes its result by this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaskKind {
-    /// `tlstore install|update|remove --progress …`
+    /// `tlstore install|update|remove|self-update --progress …`
     Job,
+    /// `tlstore self-update --check --tsv`: whether a newer store is offered, judged at exit.
+    SelfCheck,
     /// `tlstore snapshot --tsv`: the whole catalog, judged at exit.
     Snapshot,
     /// `tlstore prefetch`: one line per asset, read as it comes.

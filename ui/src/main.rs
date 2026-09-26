@@ -1,8 +1,9 @@
-use std::process::ExitCode;
+use std::path::Path;
+use std::process::{Command, ExitCode};
 
 use tlstore_ui::app::{self, Options};
 use tlstore_ui::launch;
-use tlstore_ui::store::{proc::Env, Router};
+use tlstore_ui::store::{proc::Env, Exit, Router};
 use tlstore_ui::term::{self, Parser, Tty};
 
 const USAGE: &str = "tlstore-ui opens the store; run tlstore to start it.
@@ -35,14 +36,17 @@ fn probe() -> std::io::Result<()> {
 }
 
 /// Opens the store here, or in a window of its own when this pane is smaller than the store
-/// is designed for (see `launch`).
+/// is designed for (see `launch`). When the store moved itself to a newer release while it
+/// ran, the new `tlstore-ui` takes over from here (see [`reexec`]).
 fn store() -> ExitCode {
     let env = Env::from_env();
+    // This binary's path, taken now: a self-update renames the new copy over this file,
+    // after which /proc/self/exe names a deleted inode and the path is what to run.
+    let exe = std::env::current_exe().unwrap_or_else(|_| "tlstore-ui".into());
     let size = Tty::open().and_then(|t| t.size()).ok();
     let hint = match size {
         Some(s) => {
             let no_window = std::env::var("TLSTORE_NO_WINDOW").is_ok_and(|v| v == "1");
-            let exe = std::env::current_exe().unwrap_or_else(|_| "tlstore-ui".into());
             match launch::start(s.cols, s.rows, no_window, env.launcherctl.as_deref(), &exe) {
                 launch::Start::Moved => {
                     println!("{}", launch::OPENED);
@@ -54,14 +58,35 @@ fn store() -> ExitCode {
         None => None,
     };
     let mut router = Router::animated(env);
-    router.st.notice = hint.map(str::to_string);
+    if let Some(h) = hint {
+        router.st.notice = Some(h.to_string());
+    }
+    let exit = router.st.exit.clone();
     match app::run(Box::new(router), Options::default()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => match exit.borrow_mut().take() {
+            Some(Exit::ReExec { version }) => reexec(&exe, &version),
+            None => ExitCode::SUCCESS,
+        },
         Err(e) => {
             eprintln!("tlstore-ui: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// The store under this process is a newer release now: runs the new `tlstore-ui` in this
+/// process's place — same arguments, same environment, plus `TLSTORE_UI_SELF_UPDATED=<version>`
+/// so the new copy says so once and never checks for an update again on this launch. The
+/// terminal is already back the way it was found (`app::run` restores it on the way out, as
+/// on any exit). exec only returns when it failed; then the person is told to start again.
+fn reexec(exe: &Path, version: &str) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let mut args = std::env::args_os();
+    let argv0 = args.next().unwrap_or_else(|| "tlstore".into());
+    let err = Command::new(exe).args(args).arg0(argv0).env("TLSTORE_UI_SELF_UPDATED", version).exec();
+    eprintln!("tlstore-ui: could not start the new store: {err}");
+    println!("tlstore updated to {version} — run tlstore again");
+    ExitCode::SUCCESS
 }
 
 fn main() -> ExitCode {
@@ -103,7 +128,8 @@ fn main() -> ExitCode {
 /// The launcher labels a pane or window chip with the foreground process's name: argv[0] from
 /// `/proc/<pid>/cmdline` (WindowForegroundResolver), which for this binary is the path of
 /// `tlstore-ui`. People know the store as `tlstore`, so the store re-executes itself once with
-/// that argv[0], and also sets `comm` for `ps` and `top`.
+/// that argv[0], and also sets `comm` for `ps` and `top`. The environment survives that exec,
+/// `TLSTORE_UI_SELF_UPDATED` included.
 fn name_process(store: bool) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {

@@ -1,8 +1,9 @@
-# tlstore-ui contract (Revision 7) — header, Front, Item, Installing
+# tlstore-ui contract (Revision 9) — header, Front, Item, Installing, the store updating itself
 
 crate tlstore_ui — use tlstore_ui::{app::*, render::*, layout::*, palette::*, picture::*, term::{Event,Key,Mouse,MouseKind,Size,Caps}};
 app::run(first: Box<dyn Screen>, Options::default()) -> io::Result<()>  // opens tty, probes (≤150ms), loops, restores; Ctrl-C/SIGTERM quit
-trait Screen { draw(&mut self, f:&mut Frame); handle(&mut self, ev:&Event, ctx:&mut Ctx)->Nav; animating()->bool; tick(now,ctx)->bool; watch()->Vec<RawFd> }
+trait Screen { draw(&mut self, f:&mut Frame); handle(&mut self, ev:&Event, ctx:&mut Ctx)->Nav; animating()->bool; tick(now,ctx)->bool; watch()->Vec<RawFd>;
+  finished()->bool /*asked after every tick: true ends the loop as a quit does, terminal restored*/ }
 Ctx { size: Size{cols,rows,cell_w,cell_h}, caps: Caps, palette: Palette, pics: Pictures, motion: bool /*TLSTORE_MOTION!=0*/, home, cell_known }
 Event { Key(Key), Mouse(Mouse{kind,button,col,row,..}), Resize(Size), Tap{action:ActionId,col,row}, Readable(RawFd), Reply(_) }
 Frame (fresh blank each draw; all clipped): f.text/text_clip/text_right/text_centred, f.fill, f.hline, f.sized(x,y,s,Sizing,st)->Rect (OSC 66,
@@ -42,21 +43,28 @@ header(cols,rows,body_need,pic_rows:Option<u16>) -> Header { tier, narrow, gutte
 key_slots(cols) = [2,12,24,34,45] (≥53) | [1,8,16,24,32] (<44) | spread between; key_rooms(cols) = columns per slot.
 wrap(s,w,max_lines)/fit_line(s,w): whole words, `…` when cut. centre_x(rect,w).
 
-use tlstore_ui::store::{Router, Store, Go, View, Verb, Job, Gh, Got, Readme, GH_NOTICE, header_for, picture_in, paint::*, scene::*, readme, motion::Timeline};
+use tlstore_ui::store::{Router, Store, Go, View, Verb, Job, Gh, Got, Readme, SelfUpdate, Exit, GH_NOTICE, STORE_REPO, SELF_UPDATE_HOLD, UPDATED_NOTICE,
+  header_for, picture_in, paint::*, scene::*, readme, motion::Timeline};
 Router::new(env) (no motion) | Router::animated(env) (Timeline) | Router::with_motion(env, Box<dyn Motion>); Router::set_clock(Fn()->Instant)
 Router is the only app::Screen; views: Front → Item → Installing, stacked; Router::top()/depth()/header_item(); router.st is the Store.
 trait View { name()->"front"|"item"|"installing"; draw(&mut self,p:&mut Paint,st:&mut Store) /*header + body*/; keys(&self,st)->Slots;
   handle(&mut self,ev,st)->Go::{Stay,Pass,Push,Replace,Back,Home,Quit}; refresh(&mut self,st) }  Router draws notice + key row after draw().
 Store: cat (Catalog: items, updates, info(name)->&Info, loading, error), job: Option<Job{verb,names,current,pct,step,done,exit,cancelled}>, gh, stars,
-  notice, now (router clock), start_job/cancel_job/job_running, star(name)->bool (GH_NOTICE on the notice row when gh is signed out; waits for gh
-  while it is still being asked), open_url/open_repo, toggle_fullscreen (launcherctl as a task, optimistic), facts(name,state)->Facts,
+  notice, notice_until (a timed notice; any key clears both), now (router clock), start_job/cancel_job/job_running, star(name)->bool (GH_NOTICE on
+  the notice row when gh is signed out; waits for gh while it is still being asked), open_url/open_repo, toggle_fullscreen (launcherctl as a task,
+  optimistic), facts(name,state)->Facts, self_update: SelfUpdate::{Checking,NotOffered,Offered{have,new}}, quit_at, exit: Rc<RefCell<Option<Exit>>>,
   fetch(Fetch)->Got::{Pending,Ready(path),Failed(code)} (spawns `tlstore picture|readme|readme-asset` once, off the draw path; while the prefetch runs a
   picture/demo/readme is awaited from it instead), picture(&mut pics, FileKey)->Lookup (the decode worker fits it; Missing until then),
   picture_path(name), readme(name)->Readme::{Loading /*fetching or being parsed by the worker*/,Doc(Rc<Doc>),NoUpstream /*exit 2*/,Unavailable /*exit 1*/},
   asset_path(name,src), header_shown(name)/header_rested(name,motion) /*150 ms rest, wake_at ticks the router*/, tasks_pending() /*tasks or decodes*/,
   take_job_finished(), leaving.
-  Nothing runs synchronously: Store::new spawns `tlstore snapshot --tsv` (Catalog::loading until it lands; Front says Loading…), `update --check --tsv`
-  and `gh auth status`. The snapshot (data::Snapshot::parse: item/field/update/cached lines) fills the catalog and seeds fetched with every cached
+  Nothing runs synchronously: Store::new spawns `tlstore self-update --check --tsv` first, then `tlstore snapshot --tsv` (Catalog::loading until it
+  lands; Front says Loading…), `update --check --tsv` (which no longer touches tlstore itself) and `gh auth status`. The check (data::parse_self_check:
+  `self\t<have>\t<new>\t<0|1>`) answering available, with no job running, starts Verb::SelfUpdate (`tlstore self-update --progress`, names ["tlstore"],
+  not held for the refresh) and the router pushes Installing at once; anything else, and startup is as before. The snapshot's readme: Verb::SelfUpdate
+  never takes a snapshot or sends an OSC 99. Env.self_updated ($TLSTORE_UI_SELF_UPDATED=<version>, set by the re-exec below) skips the check and puts
+  "tlstore updated to <version>" on the notice row for UPDATED_NOTICE (4 s).
+  The snapshot (data::Snapshot::parse: item/field/update/cached lines) fills the catalog and seeds fetched with every cached
   asset and every asset an item does not have (Failed at once); then `tlstore prefetch` runs once (again after a refresh), its lines
   (proc::parse_prefetch: ready/failed name kind path|reason [src]) landing in fetched as they arrive; a job's end and a refresh ask for a new snapshot.
   on_readable(fd, &mut pics) also drains the decode worker (store::decode: 2 threads, a self-pipe fd in watch() while busy).
@@ -77,10 +85,22 @@ scene: El::{Mark, Context, Picture, Name, Standfirst, Facts, Pill, Row(n), Block
 motion (D7): leave 120 ms body fade (pictures hidden at once); enter: body element i fades 0→1 over 200 ms from min(30·i,100) ms, rest by 300;
   header/notice/keys never move; Installing count-up 200+6·|Δ| ms (≤700) on Block(0).value. Input goes to the new view at once, during the leave too.
   TLSTORE_MOTION=0: no navigate/frame/drawn, frames at rest, header pictures placed at once.
+Installing, Verb::SelfUpdate: the same screen for the item `tlstore` — no catalog row and no picture (layout::header(…,7,None)), the name in the script
+  face, standfirst "the launcher's tool store", masthead link STORE_REPO, facts `updating <have> → <new>` from Store::self_update; steps and the line
+  from the stream as for any item (fetched to 80, signature checked 85, putting files in place 92, ready 100). Keys while running: `x cancel` · `esc
+  back`; esc/back, x and q all cancel (a self-update never runs on under the store), esc then goes Back and q quits. `done tlstore ok`: Store sets
+  quit_at = now + SELF_UPDATE_HOLD (600 ms) and exit = Exit::ReExec{version} (from "updated to <v>", else the check's new); the screen holds at 100
+  and ignores keys, Router::animating stays true, Router::finished turns true at quit_at and app::run ends as on a quit (outq flushed, Tty dropped:
+  LEAVE — modes off, kitty images deleted, cursor shown, main screen — then Router::drop). main then execs the path current_exe() gave at startup
+  (the file was replaced by rename; /proc/self/exe is stale by then) with the same argv and env plus TLSTORE_UI_SELF_UPDATED=<version>; a failed
+  exec prints "tlstore updated to <v> — run tlstore again" and exits 0. `done tlstore failed`: the failure summary as for any job (notice row
+  "Could not update tlstore. Try again later."), ⏎ done → Back, the store goes on on the old files.
 Measured (tests/screens.rs, 53×26 kitty, push to item): frames ≤ 8 KB, nothing written at rest. Release binary (host x86_64, stripped): 1.41 MB.
-Binary: tlstore-ui | --probe | --version. Fixture store: tests/fixtures/store (stub tlstore speaks snapshot/prefetch/list/info/update/picture/readme/
-  readme-asset/jobs; `picture` answers pics/<name>.png before .jpg, so a test can drop in an APNG; `prefetch` reports every fixture asset only when
-  the file prefetch-lines exists (Opts.prefetch), else nothing, so every asset is asked for on its own).
+Binary: tlstore-ui | --probe | --version; env TLSTORE_UI_SELF_UPDATED=<version> (set only by the re-exec above). Fixture store: tests/fixtures/store
+  (stub tlstore speaks snapshot/prefetch/list/info/update/self-update/picture/readme/readme-asset/jobs; `picture` answers pics/<name>.png before
+  .jpg, so a test can drop in an APNG; `prefetch` reports every fixture asset only when the file prefetch-lines exists (Opts.prefetch), else
+  nothing, so every asset is asked for on its own; `self-update --check` offers 0.6 → 0.7 only when the file self-update exists (Opts.self_update),
+  `self-update --progress` plays the tlstore stream, sleeping at 44 with `hold`, failing with `fail-tlstore`; Opts.self_updated sets Env.self_updated).
 
 # preview renderer (cargo feature `shot`; dev only, build-ui.sh never enables it)
 tlstore-ui --shot <cols>x<rows> --screen <spec> --out <file.png> [--store <dir>]  |  --shot-all --out <dir> [--store <dir>]
