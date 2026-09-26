@@ -3088,7 +3088,7 @@ self_update_check() {
                 fi
                 ;;
             2) err "$SU_NOTE" ;;
-            *) [ -z "$su_version" ] || su_latest=$su_version ;;
+            *) [ -z "${su_version:-}" ] || su_latest=$su_version ;;
         esac
     fi
     if [ "${cs_tsv:-0}" = 1 ]; then

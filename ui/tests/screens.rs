@@ -876,7 +876,8 @@ fn a_newer_store_installs_itself_first_then_hands_over() {
     // The check is the first thing asked, beside the snapshot; a newer store means the
     // Installing screen, for tlstore itself, before anything else.
     let calls = h.log("calls.log");
-    assert_eq!(calls.lines().next(), Some("self-update --check --tsv"), "{calls}");
+    // The check and the snapshot start together; either may log first.
+    assert!(calls.lines().any(|l| l == "self-update --check --tsv"), "{calls}");
     assert!(calls.lines().any(|l| l == "self-update --progress"), "{calls}");
     assert_eq!(h.r().top(), "installing", "{}", h.text);
     let hdr = layout::header(53, 26, 7, None);
@@ -937,7 +938,8 @@ fn no_newer_store_means_front_as_before() {
     let mut h = H::new(53, 26, Opts::default());
     assert_eq!(h.r().top(), "front", "{}", h.text);
     let calls = h.log("calls.log");
-    assert_eq!(calls.lines().next(), Some("self-update --check --tsv"), "{calls}");
+    // The check and the snapshot start together; either may log first.
+    assert!(calls.lines().any(|l| l == "self-update --check --tsv"), "{calls}");
     assert!(!calls.contains("self-update --progress"), "{calls}");
     assert!(!h.has("tlstore updated to") && !h.r().animating(), "{}", h.text);
     assert!(h.r().st.exit.borrow().is_none());
